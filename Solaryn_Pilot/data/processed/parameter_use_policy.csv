@@ -1,0 +1,25 @@
+field,role,decision_use,note
+IEC 61853 module-specific Pmax G-T matrix,electrical performance,YES_PREFERRED,"Measured module-specific irradiance-temperature surface; validate span, duplicates and STC anchor; no technology score."
+CEC single-diode datasheet fit,electrical performance,YES_CSI_FALLBACK,Crystalline-silicon fallback only when module-specific G-T matrix is absent; model evidence and uncertainty guardrail exposed.
+CEC single-diode for non-c-Si without validated evidence,model-form sensitivity,NO_ROBUST_WINNER,Exploratory display only. Cannot determine robust cross-technology winner.
+Vmp/Imp/Voc/Isc/Pmax,module electrical,YES_WHEN_MODEL_USED,Sourced module-level STC inputs with hard consistency checks.
+alpha_isc_pct_c / beta_voc_pct_c / gamma_pmax_pct_c,module electrical,YES_CSI_FALLBACK,Converted/used inside physical model; never turned into a standalone technology score.
+cells_in_series,module electrical,YES_CSI_FALLBACK,Electrical series count; must be verified for half-cut/unusual architectures.
+Perez-Driesse POA transposition,resource physics,YES_COMMON,Anisotropic diffuse transposition reduces climate-dependent diffuse-fraction bias versus an isotropic default.
+common physical IAM,optics,YES_COMMON_FALLBACK,Same glass optical treatment for candidates; module-specific IEC 61853-2 IAM preferred in future.
+module-specific IAM curve,optics,NOT_YET_IMPLEMENTED,Store evidence for future; current decision uses common optical fallback to avoid fabricated module differences.
+Faiman u0/u1,thermal,YES_PREFERRED,Use module-specific IEC-61853 thermal coefficients when supplied.
+SAPM construction thermal parameters,thermal,YES_FALLBACK,Generic construction-class fallback; module and cell temperatures separated and evidence exposed.
+technology-class spectral factor,spectral,SENSITIVITY_ONLY,pvlib class proxy can show sensitivity but cannot alter primary winner.
+module-specific EQE/SR declaration,spectral,NOT_YET_DECISION,EQE alone is insufficient; requires time-resolved spectral irradiance or validated module-specific correction engine. The evidence router fails closed.
+common project soiling,loss,YES_COMMON,Same site loss for all candidates; no technology-resilience score.
+common project degradation scenario,lifetime/economics,YES_PRIMARY_SENSITIVITY,Same declared degradation sensitivity for every candidate until calibrated module/BOM field model exists.
+manufacturer warranty degradation,lifetime/economics,SENSITIVITY_ONLY,Warranty language is not field degradation and cannot manufacture primary winner or primary price threshold.
+environmental stress exposures,reliability,DIAGNOSTIC_ONLY,Hot/damp/UV/thermal-cycle descriptors are not converted into %/year degradation without calibrated evidence.
+quote_usd_w,economics,ONLY_REAL_USER_QUOTE,Seed values blank. Switching analysis requires real baseline quote.
+area-sensitive BOS,economics,YES_PROXY,Only land/racking/area-sensitive term; explicitly not full BOS or LCOE.
+economic switching threshold,economics,YES_IF_ENERGY_MODEL_ELIGIBLE,Blocked for candidates whose energy model evidence is decision-ineligible.
+energy-rating uncertainty guardrail,decision,YES_GUARDRAIL,Default 2% screening threshold; not a probabilistic confidence interval.
+project segment,eligibility,YES_FILTER,Avoid apples-to-oranges product comparisons.
+legacy heat/humidity/soiling/low-light scores,research heuristic,NO_EPC_RANK,Never imported into EPC production decision path.
+material bandgap/mobility/lifetime/defects/absorber thickness,material research,NO_EPC_CURRENT,Preserved for future validated R&D/manufacturer physics layer; no current procurement rank effect.

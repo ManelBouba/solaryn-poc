@@ -1,0 +1,4 @@
+index,case_id,case_name,country,sum,count,case_pass
+0,RW_COMPOSITE_IN_001,Solar Energy Centre Gurgaon,India,2,2,True
+1,RW_HOT_ARID_MA_001,Green Energy Park Benguerir,Morocco,0,1,False
+2,RW_TROPICAL_BN_001,Tenaga Suria Brunei 1.2 MW experimental solar farm,Brunei Darussalam,2,2,True

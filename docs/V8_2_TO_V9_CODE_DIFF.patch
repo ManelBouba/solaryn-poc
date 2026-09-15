@@ -1,0 +1,2398 @@
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/economics_engine.py solaryn_v9_work/src/economics_engine.py
+--- v8_2_baseline/src/economics_engine.py	2026-08-18 09:07:26.000000000 +0000
++++ solaryn_v9_work/src/economics_engine.py	2026-08-19 13:54:29.091577707 +0000
+@@ -3,29 +3,18 @@
+ import numpy as np
+ import pandas as pd
+ 
+-from src.lifetime_engine import warranty_retention_curve
++from src.lifetime_engine import common_linear_degradation_curve, warranty_retention_curve
+ 
+ 
+-def npv_energy_value_per_w(
++def _npv_from_retention_curve(
+     annual_yield_kwh_kwp: float,
+-    first_year_retention_pct: float,
+-    annual_degradation_pct_year: float,
++    curve: pd.DataFrame,
+     energy_value_usd_kwh: float,
+     discount_rate_pct: float,
+-    years: int = 25,
+ ) -> float:
+-    """Present value of modeled energy per installed module watt.
+-
+-    This is an economic switching proxy, not full project LCOE. The lifetime path is warranty-derived and is not an energy guarantee or field-degradation prediction.
+-    """
+     r = float(discount_rate_pct) / 100.0
+     if r <= -1:
+         raise ValueError("discount_rate_pct must be greater than -100%.")
+-    curve = warranty_retention_curve(
+-        first_year_retention_pct,
+-        annual_degradation_pct_year,
+-        years,
+-    )
+     annual_per_w = (
+         float(annual_yield_kwh_kwp) / 1000.0
+         * curve["annual_energy_retention_scenario_pct"].to_numpy() / 100.0
+@@ -34,8 +23,36 @@
+     return float(np.sum(annual_per_w * float(energy_value_usd_kwh) / discounts))
+ 
+ 
++def npv_energy_value_common_scenario_per_w(
++    annual_yield_kwh_kwp: float,
++    annual_degradation_pct_year: float,
++    energy_value_usd_kwh: float,
++    discount_rate_pct: float,
++    years: int = 25,
++) -> float:
++    """Primary bias-controlled energy-value sensitivity using one common degradation path."""
++    curve = common_linear_degradation_curve(annual_degradation_pct_year, years)
++    return _npv_from_retention_curve(annual_yield_kwh_kwp, curve, energy_value_usd_kwh, discount_rate_pct)
++
++
++def npv_energy_value_per_w(
++    annual_yield_kwh_kwp: float,
++    first_year_retention_pct: float,
++    annual_degradation_pct_year: float,
++    energy_value_usd_kwh: float,
++    discount_rate_pct: float,
++    years: int = 25,
++) -> float:
++    """Warranty-derived economic sensitivity retained for backwards compatibility.
++
++    This is NOT the V9 primary switching metric because manufacturer warranty language
++    must not manufacture the procurement winner. It is reported only as a sensitivity.
++    """
++    curve = warranty_retention_curve(first_year_retention_pct, annual_degradation_pct_year, years)
++    return _npv_from_retention_curve(annual_yield_kwh_kwp, curve, energy_value_usd_kwh, discount_rate_pct)
++
++
+ def area_bos_cost_per_w(module_area_m2: float, pmax_w: float, area_bos_usd_m2: float) -> float:
+-    """Area-sensitive module+racking/land proxy expressed in $/W."""
+     return float(area_bos_usd_m2) * float(module_area_m2) / float(pmax_w)
+ 
+ 
+@@ -47,32 +64,43 @@
+     discount_rate_pct: float,
+     area_bos_usd_m2: float,
+     years: int = 25,
++    common_degradation_pct_year: float = 0.50,
+ ) -> pd.DataFrame:
+-    """Compute module-price indifference thresholds versus one baseline offer.
++    """Compute module-price indifference thresholds versus a real baseline quote.
++
++    V9 primary threshold uses a *common* project degradation sensitivity across all
++    modules. A second warranty-derived threshold is shown only as a sensitivity.
+ 
+-    Threshold for candidate A:
+       quote_A* = quote_B + (NPVenergy_A - NPVenergy_B)
+                          + (areaBOS_B - areaBOS_A)
+ 
+-    The result is *not* LCOE because inverter, electrical BOS, O&M, taxes,
+-    financing and replacement assumptions are not modeled here.
++    This remains a module + area-sensitive BOS switching proxy, not full LCOE.
+     """
+     if baseline_module_id not in set(results["module_id"]):
+         raise ValueError("Baseline module is not in result set.")
+ 
+     m_lookup = modules.set_index("module_id")
+     r_lookup = results.set_index("module_id")
++    if "decision_eligible" in r_lookup.columns and not bool(r_lookup.loc[baseline_module_id, "decision_eligible"]):
++        raise ValueError("Economic switching baseline is decision-ineligible because its energy model evidence is incomplete.")
+     baseline_m = m_lookup.loc[baseline_module_id]
+-    baseline_r = r_lookup.loc[baseline_module_id]
+     baseline_quote = pd.to_numeric(pd.Series([baseline_m.get("quote_usd_w")]), errors="coerce").iloc[0]
+     if not np.isfinite(baseline_quote):
+         raise ValueError("Enter a real quoted $/W for the selected baseline module.")
+ 
+-    def values(mid: str) -> tuple[float, float]:
++    def values(mid: str) -> tuple[float, float, float]:
+         m = m_lookup.loc[mid]
+         rr = r_lookup.loc[mid]
+-        energy_npv = npv_energy_value_per_w(
+-            rr["annual_yield_kwh_kwp"],
++        annual = float(rr["annual_yield_kwh_kwp"])
++        common_energy_npv = npv_energy_value_common_scenario_per_w(
++            annual,
++            common_degradation_pct_year,
++            energy_value_usd_kwh,
++            discount_rate_pct,
++            years,
++        )
++        warranty_energy_npv = npv_energy_value_per_w(
++            annual,
+             m["first_year_retention_pct"],
+             m["annual_warranty_degradation_pct_year"],
+             energy_value_usd_kwh,
+@@ -80,29 +108,50 @@
+             years,
+         )
+         area_bos = area_bos_cost_per_w(m["module_area_m2"], m["pmax_w"], area_bos_usd_m2)
+-        return energy_npv, area_bos
++        return common_energy_npv, warranty_energy_npv, area_bos
+ 
+-    base_energy, base_area = values(baseline_module_id)
++    base_common, base_warranty, base_area = values(baseline_module_id)
+     rows = []
+     for mid in results["module_id"]:
+         m = m_lookup.loc[mid]
+-        energy_npv, area_bos = values(mid)
+-        allowable_premium = (energy_npv - base_energy) + (base_area - area_bos)
+-        threshold = float(baseline_quote) + allowable_premium
++        rr = r_lookup.loc[mid]
++        economic_eligible = bool(rr.get("decision_eligible", True))
+         quote = pd.to_numeric(pd.Series([m.get("quote_usd_w")]), errors="coerce").iloc[0]
++        if economic_eligible:
++            common_npv, warranty_npv, area_bos = values(mid)
++            common_premium = (common_npv - base_common) + (base_area - area_bos)
++            warranty_premium = (warranty_npv - base_warranty) + (base_area - area_bos)
++            threshold = float(baseline_quote) + common_premium
++            warranty_threshold = float(baseline_quote) + warranty_premium
++            preferred = bool(np.isfinite(quote) and quote <= threshold) if mid != baseline_module_id else True
++            evidence_note = "energy_model_eligible_for_switching_screen"
++        else:
++            # Do not calculate a price threshold from an energy model that is already
++            # barred from the physical decision. This prevents economics from reviving
++            # a winner that the evidence gate rejected.
++            common_npv = warranty_npv = area_bos = np.nan
++            common_premium = warranty_premium = np.nan
++            threshold = warranty_threshold = np.nan
++            preferred = np.nan
++            evidence_note = "blocked_incomplete_energy_model_evidence"
+         rows.append({
+             "module_id": mid,
+             "manufacturer": m["manufacturer"],
+             "model": m["model"],
+             "baseline_module_id": baseline_module_id,
+-            "npv_energy_value_usd_per_w": energy_npv,
++            "npv_energy_value_usd_per_w": common_npv,
++            "npv_energy_value_common_degradation_usd_per_w": common_npv,
++            "npv_energy_value_warranty_sensitivity_usd_per_w": warranty_npv,
+             "area_bos_proxy_usd_per_w": area_bos,
+-            "allowable_module_price_premium_vs_baseline_usd_w": allowable_premium,
++            "allowable_module_price_premium_vs_baseline_usd_w": common_premium,
+             "indifference_module_price_usd_w": threshold,
++            "indifference_module_price_warranty_sensitivity_usd_w": warranty_threshold,
+             "actual_quote_usd_w": quote,
+-            "economically_preferred_vs_baseline_at_quote": (
+-                bool(np.isfinite(quote) and quote <= threshold) if mid != baseline_module_id else True
+-            ),
++            "economically_preferred_vs_baseline_at_quote": preferred,
++            "economic_decision_eligible": economic_eligible,
++            "economic_evidence_note": evidence_note,
++            "common_degradation_scenario_pct_year": float(common_degradation_pct_year),
+             "economic_model_scope": "module_plus_area_BOS_switching_proxy_not_LCOE",
++            "degradation_policy": "common_project_scenario_primary_warranty_only_sensitivity",
+         })
+     return pd.DataFrame(rows)
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/epc_decision.py solaryn_v9_work/src/epc_decision.py
+--- v8_2_baseline/src/epc_decision.py	2026-08-18 09:14:10.000000000 +0000
++++ solaryn_v9_work/src/epc_decision.py	2026-08-19 13:49:49.416642279 +0000
+@@ -1,7 +1,10 @@
+ from __future__ import annotations
+ 
++import numpy as np
+ import pandas as pd
+ 
++from src.evidence_policy import DEFAULT_ENERGY_RATING_UNCERTAINTY_GUARDRAIL_PCT
++
+ 
+ def _leader_and_gap(df: pd.DataFrame, col: str) -> tuple[pd.Series, float]:
+     ordered = df.sort_values(col, ascending=False).reset_index(drop=True)
+@@ -17,75 +20,135 @@
+ def epc_energy_decision(
+     results: pd.DataFrame,
+     minimum_separation_pct: float = 1.0,
++    uncertainty_guardrail_pct: float = DEFAULT_ENERGY_RATING_UNCERTAINTY_GUARDRAIL_PCT,
+ ) -> dict:
+-    """Decide whether an EPC energy leader is stable across declared scenarios.
++    """Bias-controlled decision guardrail for module comparison.
++
++    A robust V9 physics leader requires:
++      * a model-evidence-eligible result for every selected candidate;
++      * the same leader for broadband/primary annual and the common-degradation
++        lifetime sensitivity;
++      * separation larger than both the user policy threshold and the declared
++        energy-rating uncertainty guardrail.
+ 
+-    The serious-PoC rule is deliberately conservative. A robust leader must remain
+-    the same under:
+-      1) broadband CEC-IV annual specific energy (no class spectral proxy),
+-      2) spectral-adjusted annual specific energy, and
+-      3) the 25-year manufacturer-warranty-derived lifetime-energy scenario.
+-
+-    The spectral comparison matters because the built-in technology-class spectral
+-    model is a first-order proxy, not an exact EQE curve for each modern module.
+-    This is a deterministic scenario-stability test, NOT probabilistic confidence
+-    and NOT a bankability opinion.
++    Manufacturer warranty and technology-class spectral corrections are sensitivities,
++    not hidden winner-making inputs. If evidence is incomplete, Solaryn fails closed.
+     """
+     if results.empty:
+         raise ValueError("No module results available.")
+ 
+-    spectral_col = "annual_yield_kwh_kwp"
++    primary_col = "annual_yield_kwh_kwp"
+     broadband_col = (
+-        "annual_dc_specific_energy_no_spectral_kwh_kwp"
+-        if "annual_dc_specific_energy_no_spectral_kwh_kwp" in results.columns
+-        else spectral_col
++        "annual_dc_specific_energy_broadband_kwh_kwp"
++        if "annual_dc_specific_energy_broadband_kwh_kwp" in results.columns
++        else (
++            "annual_dc_specific_energy_no_spectral_kwh_kwp"
++            if "annual_dc_specific_energy_no_spectral_kwh_kwp" in results.columns
++            else primary_col
++        )
++    )
++    common_lifetime_col = (
++        "lifetime_energy_common_degradation_scenario_kwh_kwp"
++        if "lifetime_energy_common_degradation_scenario_kwh_kwp" in results.columns
++        else "lifetime_energy_warranty_scenario_kwh_kwp"
++    )
++    warranty_col = (
++        "lifetime_energy_warranty_scenario_kwh_kwp"
++        if "lifetime_energy_warranty_scenario_kwh_kwp" in results.columns
++        else common_lifetime_col
+     )
+-    lifetime_col = "lifetime_energy_warranty_scenario_kwh_kwp"
+ 
+     broadband_leader, broadband_gap = _leader_and_gap(results, broadband_col)
+-    annual_leader, annual_gap = _leader_and_gap(results, spectral_col)
+-    life_leader, life_gap = _leader_and_gap(results, lifetime_col)
+-
+-    same = (
+-        broadband_leader["module_id"]
+-        == annual_leader["module_id"]
+-        == life_leader["module_id"]
++    annual_leader, annual_gap = _leader_and_gap(results, primary_col)
++    life_leader, life_gap = _leader_and_gap(results, common_lifetime_col)
++    warranty_leader, warranty_gap = _leader_and_gap(results, warranty_col)
++
++    eligible = (
++        results["decision_eligible"].fillna(False).astype(bool)
++        if "decision_eligible" in results.columns
++        else pd.Series(True, index=results.index)
+     )
++    evidence_complete = bool(eligible.all())
++    ineligible_ids = results.loc[~eligible, "module_id"].astype(str).tolist()
++
++    same_physics = broadband_leader["module_id"] == annual_leader["module_id"] == life_leader["module_id"]
+     sep = float(minimum_separation_pct)
+-    separated = broadband_gap >= sep and annual_gap >= sep and life_gap >= sep
++    u = max(0.0, float(uncertainty_guardrail_pct))
++    required_gap = max(sep, u)
++    separated = broadband_gap >= required_gap and annual_gap >= required_gap and life_gap >= required_gap
++
++    # New V9 outputs carry a dedicated spectral-sensitivity column. It is diagnostic
++    # unless module-specific spectral evidence is available. Older V8-style tables used
++    # annual_yield as the spectral-adjusted result; preserve the conservative legacy rule.
++    spectral_sensitivity_flag = False
++    spectral_sensitivity_leader_id = annual_leader["module_id"]
++    if "annual_dc_specific_energy_spectral_sensitivity_kwh_kwp" in results.columns:
++        spectral_leader, spectral_gap = _leader_and_gap(results, "annual_dc_specific_energy_spectral_sensitivity_kwh_kwp")
++        spectral_sensitivity_leader_id = spectral_leader["module_id"]
++        spectral_sensitivity_flag = spectral_leader["module_id"] != broadband_leader["module_id"]
++        spectral_proxy_policy = "technology_class_proxy_is_sensitivity_only_unless_module_specific_evidence"
++    else:
++        spectral_gap = annual_gap
++        spectral_sensitivity_flag = annual_leader["module_id"] != broadband_leader["module_id"]
++        spectral_proxy_policy = "must_not_change_the_robust_leader"
++        if spectral_sensitivity_flag:
++            same_physics = False
+ 
+-    if same and separated:
+-        status = "stable_leader_across_declared_energy_scenarios"
++    warranty_flip = warranty_leader["module_id"] != life_leader["module_id"]
++
++    if not evidence_complete:
++        status = "incomplete_cross_technology_model_evidence"
+         headline = (
+-            f"{life_leader['manufacturer']} {life_leader['model']} leads the broadband IV, "
+-            "spectral-adjusted annual, and warranty-derived lifetime scenarios."
++            "No robust cross-technology winner: at least one selected candidate lacks a module-specific "
++            "performance matrix or a model class accepted for decision use."
+         )
++        winner = None
++    elif same_physics and separated:
++        status = "stable_physics_leader_above_uncertainty_guardrail"
+         winner = life_leader["module_id"]
++        headline = (
++            f"{life_leader['manufacturer']} {life_leader['model']} is the stable physics leader under the "
++            f"declared annual/common-degradation scenario, with all required gaps ≥ {required_gap:.2f}%."
++        )
++        if spectral_sensitivity_flag:
++            headline += " Technology-class spectral sensitivity changes the leader; module-specific spectral data is required before a spectral claim."
++        if warranty_flip:
++            headline += " The manufacturer-warranty sensitivity changes the lifetime leader; warranty language is not treated as field degradation."
+     else:
+-        status = "no_robust_winner_under_declared_scenarios"
+-        if not same:
+-            headline = (
+-                "No robust winner: the leading module changes across broadband IV, "
+-                "spectral-proxy, or warranty-derived lifetime scenarios."
+-            )
++        winner = None
++        if not same_physics:
++            status = "no_robust_winner_under_declared_scenarios"
++            headline = "No robust winner: the leader changes across the declared physics/lifetime scenarios."
+         else:
++            status = "no_robust_winner_under_uncertainty_guardrail"
+             headline = (
+-                f"No robust winner: the leading module is separated by less than "
+-                f"{sep:.2f}% in at least one declared scenario."
++                f"No robust winner: the leading module is separated by less than the required "
++                f"{required_gap:.2f}% uncertainty/separation guardrail in at least one primary scenario."
+             )
+-        winner = None
+ 
+     return {
+         "status": status,
+         "headline": headline,
+         "winner_module_id": winner,
++        "provisional_broadband_leader_module_id": broadband_leader["module_id"],
+         "broadband_leader_module_id": broadband_leader["module_id"],
+         "annual_leader_module_id": annual_leader["module_id"],
+         "lifetime_leader_module_id": life_leader["module_id"],
++        "warranty_sensitivity_leader_module_id": warranty_leader["module_id"],
++        "spectral_sensitivity_leader_module_id": spectral_sensitivity_leader_id,
+         "broadband_lead_over_second_pct": broadband_gap,
+         "annual_lead_over_second_pct": annual_gap,
+         "lifetime_lead_over_second_pct": life_gap,
++        "warranty_sensitivity_lead_over_second_pct": warranty_gap,
++        "spectral_sensitivity_lead_over_second_pct": spectral_gap,
+         "minimum_separation_policy_pct": sep,
++        "energy_rating_uncertainty_guardrail_pct": u,
++        "required_decision_gap_pct": required_gap,
++        "evidence_complete_for_all_selected_candidates": evidence_complete,
++        "decision_ineligible_module_ids": ineligible_ids,
++        "warranty_sensitivity_changes_leader": bool(warranty_flip),
++        "spectral_sensitivity_changes_leader": bool(spectral_sensitivity_flag),
+         "claim_scope": "scenario_stability_not_probabilistic_confidence",
+-        "spectral_proxy_policy": "must_not_change_the_robust_leader",
++        "spectral_proxy_policy": spectral_proxy_policy,
++        "uncertainty_policy": "decision_gap_must_exceed_declared_energy_rating_uncertainty_guardrail",
+     }
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/epc_report.py solaryn_v9_work/src/epc_report.py
+--- v8_2_baseline/src/epc_report.py	2026-08-18 09:14:10.000000000 +0000
++++ solaryn_v9_work/src/epc_report.py	2026-08-19 13:52:54.650779058 +0000
+@@ -1,16 +1,27 @@
+ from __future__ import annotations
+ 
+ from html import escape
++import math
+ import pandas as pd
+ 
+ 
+ def _fmt(v, digits=2):
+     try:
+-        return f"{float(v):,.{digits}f}"
++        x = float(v)
++        if not math.isfinite(x):
++            return "—"
++        return f"{x:,.{digits}f}"
+     except Exception:
+         return escape(str(v))
+ 
+ 
++def _safe_url(v) -> str:
++    text = str(v or "").strip()
++    if not text or text.lower() == "nan":
++        return ""
++    return escape(text, quote=True)
++
++
+ def build_epc_html_report(
+     site: dict,
+     project: dict,
+@@ -21,30 +32,37 @@
+     switching: pd.DataFrame | None = None,
+     pvgis_note: str | None = None,
+ ) -> str:
+-    """Create a compact expert-reviewable HTML report."""
++    """Create an expert-reviewable V9 evidence/bias-control report."""
++    keep = [
++        "module_id", "manufacturer", "model", "technology_label",
++        "pmax_w", "module_efficiency_pct", "gamma_pmax_pct_c",
++        "first_year_retention_pct", "annual_warranty_degradation_pct_year",
++        "quote_usd_w", "source_url", "evidence_status", "project_segment",
++        "spectral_evidence_level", "iec61853_matrix_file",
++    ]
++    keep = [c for c in keep if c in modules.columns]
+     merged = results.merge(
+-        modules[[
+-            "module_id", "manufacturer", "model", "technology_label",
+-            "pmax_w", "module_efficiency_pct", "gamma_pmax_pct_c",
+-            "first_year_retention_pct", "annual_warranty_degradation_pct_year",
+-            "quote_usd_w", "source_url", "evidence_status",
+-        ]],
+-        on=["module_id", "manufacturer", "model", "technology_label"],
++        modules[keep],
++        on=[c for c in ["module_id", "manufacturer", "model", "technology_label"] if c in keep],
+         how="left",
+     )
++    sort_col = "lifetime_energy_common_degradation_scenario_kwh_kwp"
+     rows = []
+-    for _, r in merged.sort_values("lifetime_energy_warranty_scenario_kwh_kwp", ascending=False).iterrows():
++    for _, r in merged.sort_values(sort_col, ascending=False).iterrows():
+         rows.append(
+             "<tr>"
+             f"<td>{escape(str(r['manufacturer']))} {escape(str(r['model']))}</td>"
+-            f"<td>{escape(str(r['technology_label']))}</td>"
+-            f"<td>{_fmt(r['annual_dc_specific_energy_no_spectral_kwh_kwp'],0)}</td>"
+-            f"<td>{_fmt(r['annual_yield_kwh_kwp'],0)}</td>"
+-            f"<td>{_fmt(r.get('annual_project_dc_energy_mwh', float('nan')),0)}</td>"
+-            f"<td>{_fmt(r['lifetime_energy_warranty_scenario_kwh_kwp'],0)}</td>"
+-            f"<td>{_fmt(r['spectral_effect_pct'],2)}%</td>"
+-            f"<td>{_fmt(r['p95_cell_temperature_c_daylight'],1)}°C</td>"
+-            f"<td>{_fmt(r['annual_warranty_degradation_pct_year'],2)}%</td>"
++            f"<td>{escape(str(r.get('technology_label', '')))}</td>"
++            f"<td>{_fmt(r.get('annual_dc_specific_energy_broadband_kwh_kwp'),0)}</td>"
++            f"<td>{_fmt(r.get('annual_dc_specific_energy_spectral_sensitivity_kwh_kwp'),0)}</td>"
++            f"<td>{_fmt(r.get('annual_project_dc_energy_mwh'),0)}</td>"
++            f"<td>{_fmt(r.get('lifetime_energy_common_degradation_scenario_kwh_kwp'),0)}</td>"
++            f"<td>{_fmt(r.get('lifetime_energy_warranty_scenario_kwh_kwp'),0)}</td>"
++            f"<td>{_fmt(r.get('spectral_effect_pct'),2)}%</td>"
++            f"<td>{_fmt(r.get('p95_cell_temperature_c_daylight'),1)}°C</td>"
++            f"<td>{escape(str(r.get('electrical_model', '')))}</td>"
++            f"<td>{escape(str(r.get('model_evidence_level', '')))}</td>"
++            f"<td>{'Yes' if bool(r.get('decision_eligible', False)) else 'No'}</td>"
+             "</tr>"
+         )
+ 
+@@ -57,12 +75,14 @@
+                 f"<td>{escape(str(r['manufacturer']))} {escape(str(r['model']))}</td>"
+                 f"<td>{_fmt(r['actual_quote_usd_w'],4)}</td>"
+                 f"<td>{_fmt(r['indifference_module_price_usd_w'],4)}</td>"
++                f"<td>{_fmt(r['indifference_module_price_warranty_sensitivity_usd_w'],4)}</td>"
+                 f"<td>{_fmt(r['allowable_module_price_premium_vs_baseline_usd_w'],4)}</td>"
+                 "</tr>"
+             )
+         econ_html = (
+             "<table><thead><tr><th>Candidate</th><th>Actual quote $/W</th>"
+-            "<th>Indifference price $/W</th><th>Allowable premium vs baseline $/W</th>"
++            "<th>Primary indifference price $/W</th><th>Warranty-sensitivity threshold $/W</th>"
++            "<th>Allowable premium vs baseline $/W</th>"
+             "</tr></thead><tbody>" + "".join(erows) + "</tbody></table>"
+         )
+ 
+@@ -78,48 +98,72 @@
+             "</tr>"
+         )
+ 
++    evidence_items = []
++    for _, r in modules.iterrows():
++        name = f"{escape(str(r.get('manufacturer','')))} {escape(str(r.get('model','')))}"
++        url = _safe_url(r.get("source_url", ""))
++        status = escape(str(r.get("evidence_status", "")))
++        if url:
++            evidence_items.append(f"<li>{name}: <a href='{url}'>{status}</a></li>")
++        else:
++            evidence_items.append(f"<li>{name}: {status}</li>")
++
++    ineligible = ", ".join(map(str, decision.get("decision_ineligible_module_ids", []))) or "none"
++    project_segment = escape(str(project.get("project_segment", "not specified")))
++
+     return f"""<!doctype html>
+ <html><head><meta charset="utf-8">
+-<title>SOLARYN EPC Module Comparison</title>
++<title>SOLARYN V9 Bias-Corrected Module Comparison</title>
+ <style>
+-body{{font-family:Arial,sans-serif;max-width:1100px;margin:36px auto;color:#172033;line-height:1.45}}
++body{{font-family:Arial,sans-serif;max-width:1200px;margin:36px auto;color:#172033;line-height:1.45}}
+ h1,h2{{color:#0b5f58}} .box{{padding:16px 18px;background:#f4f8f7;border-left:4px solid #0b766e;margin:16px 0}}
+ .warn{{padding:16px 18px;background:#fff7e6;border-left:4px solid #d97706;margin:16px 0}}
+-table{{border-collapse:collapse;width:100%;margin:12px 0 24px}} th,td{{border:1px solid #d9e1e7;padding:8px;text-align:left}} th{{background:#eef4f3}}
++table{{border-collapse:collapse;width:100%;margin:12px 0 24px;font-size:13px}} th,td{{border:1px solid #d9e1e7;padding:7px;text-align:left;vertical-align:top}} th{{background:#eef4f3}}
+ small{{color:#5f6b78}}
+ </style></head><body>
+-<h1>SOLARYN — EPC Module Comparison</h1>
+-<div class="box"><strong>Decision:</strong> {escape(decision['headline'])}<br>
+-<small>{escape(decision['claim_scope'])}. This is a screening PoC, not a bankability opinion.</small></div>
++<h1>SOLARYN V9 — Bias-Corrected Module Comparison</h1>
++<div class="box"><strong>Decision status:</strong> {escape(str(decision.get('status')))}<br>
++<strong>Decision:</strong> {escape(str(decision.get('headline')))}<br>
++<small>{escape(str(decision.get('claim_scope')))}. This is a validation PoC, not a bankability opinion.</small></div>
++
++<h2>Bias-control guardrails</h2>
++<ul>
++<li>Required leader gap: {_fmt(decision.get('required_decision_gap_pct'),2)}% (max of user separation and declared energy-rating uncertainty guardrail).</li>
++<li>All selected candidates decision-evidence eligible: {escape(str(decision.get('evidence_complete_for_all_selected_candidates')))}.</li>
++<li>Decision-ineligible candidate IDs: {escape(ineligible)}.</li>
++<li>Technology-class spectral proxy changes leader: {escape(str(decision.get('spectral_sensitivity_changes_leader')))} — sensitivity only unless module-specific spectral evidence exists.</li>
++<li>Manufacturer-warranty sensitivity changes leader: {escape(str(decision.get('warranty_sensitivity_changes_leader')))} — warranty is not field degradation.</li>
++</ul>
+ 
+ <h2>Project</h2>
+ <p><strong>Location:</strong> {site.get('latitude')}, {site.get('longitude')}<br>
+ <strong>Reference year:</strong> {escape(str(project.get('reference_year')))}<br>
+ <strong>Project DC size:</strong> {_fmt(project.get('system_size_mw'),1)} MWp<br>
+-<strong>Geometry:</strong> utility-scale, fixed-tilt, monofacial; tilt {project.get('tilt_deg')}°, azimuth {project.get('azimuth_deg')}°<br>
+-<strong>Common soiling:</strong> {project.get('soiling_loss_pct')}%</p>
++<strong>Project segment:</strong> {project_segment}<br>
++<strong>Geometry:</strong> fixed-tilt, monofacial; tilt {project.get('tilt_deg')}°, azimuth {project.get('azimuth_deg')}°<br>
++<strong>Common soiling:</strong> {project.get('soiling_loss_pct')}%<br>
++<strong>Primary common-degradation sensitivity:</strong> {project.get('common_degradation_pct_year')}%/year<br>
++<strong>Energy-rating uncertainty guardrail:</strong> {project.get('uncertainty_guardrail_pct')}%</p>
+ 
+ <h2>Module comparison</h2>
+-<table><thead><tr><th>Module</th><th>Technology</th><th>Broadband IV kWh/kWp</th><th>Spectral-adjusted kWh/kWp</th>
+-<th>Project DC MWh/y</th><th>25-y warranty-derived scenario kWh/kWp</th><th>Spectral effect</th><th>P95 cell T</th><th>Warranty degradation</th>
++<table><thead><tr><th>Module</th><th>Technology</th><th>Broadband kWh/kWp</th><th>Spectral sensitivity kWh/kWp</th>
++<th>Project DC MWh/y</th><th>25-y common-degradation scenario</th><th>25-y warranty sensitivity</th><th>Spectral effect</th><th>P95 module T</th><th>Electrical model</th><th>Evidence</th><th>Decision eligible</th>
+ </tr></thead><tbody>{''.join(rows)}</tbody></table>
+ 
+ <h2>Environmental stress exposure</h2>
+-<p>Exposure descriptors below are not converted into annual degradation or failure probabilities.</p>
+-<table><thead><tr><th>Module</th><th>Hours Tcell &gt;65°C</th><th>Hours RH≥85% & Tcell≥40°C</th>
+-<th>Mean daily Tcell range</th><th>Days range &gt;30°C</th></tr></thead><tbody>{''.join(stress_rows)}</tbody></table>
++<p>Exposure descriptors below are not converted into annual degradation rates or failure probabilities without calibrated module/BOM evidence.</p>
++<table><thead><tr><th>Module</th><th>Hours Tmodule &gt;65°C</th><th>Hours RH≥85% & Tmodule≥40°C</th>
++<th>Mean daily T range</th><th>Days range &gt;30°C</th></tr></thead><tbody>{''.join(stress_rows)}</tbody></table>
+ 
+ <h2>Switching-point economics</h2>
+-<p>This is a module + area-BOS threshold analysis, not full LCOE.</p>
++<p>The primary switching threshold uses one common project degradation sensitivity. Manufacturer warranty is shown separately. This is a module + area-BOS threshold analysis, not full LCOE.</p>
+ {econ_html}
+ 
+-<h2>Independent cross-check</h2>
++<h2>Independent resource check</h2>
+ <p>{escape(pvgis_note or 'PVGIS cross-check not run.')}</p>
+ 
+-<div class="warn"><strong>Scientific boundary.</strong> The module IV model is fitted from manufacturer datasheet STC parameters using the CEC single-diode method. A common physical front-glass IAM correction is applied before the technology-class spectral modifier. The report retains both broadband and spectral-adjusted results, and a robust winner is rejected if the class-level spectral proxy changes the leader. Manufacturer power-warranty endpoints are translated into an explicit lifetime-energy scenario; this is neither an energy guarantee nor a prediction of field degradation. Project-specific BOM reliability, inverter/AC design, shading, mismatch, availability, O&M, detailed geotechnical/structural constraints and lender-grade uncertainty are outside this PoC.</div>
++<div class="warn"><strong>Scientific boundary.</strong> V9 uses a module-specific IEC 61853-style G-T performance matrix when supplied. Crystalline-silicon modules without such a matrix may use a transparent datasheet-fitted single-diode fallback under an uncertainty guardrail. Non-c-Si modules without module-specific/validated model evidence are visible for sensitivity analysis but are barred from determining a robust cross-technology winner. Generic technology-class spectral corrections and manufacturer power-warranty slopes are sensitivities, not primary winner-making terms. Generic thermal/optical fallbacks are exposed in the result and remain a source of uncertainty. Full IEC 61853-3 conformity, lender-grade uncertainty, BOM-specific degradation calibration, inverter/AC design, bifacial rear-side gain, shading, mismatch, availability and O&M remain outside this PoC.</div>
+ 
+ <h2>Evidence</h2>
+-<ul>
+-{''.join(f"<li>{escape(str(r['manufacturer']))} {escape(str(r['model']))}: <a href='{escape(str(r['source_url']))}'>{escape(str(r['evidence_status']))}</a></li>" for _, r in modules.iterrows())}
+-</ul>
++<ul>{''.join(evidence_items)}</ul>
+ </body></html>"""
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/evidence_policy.py solaryn_v9_work/src/evidence_policy.py
+--- v8_2_baseline/src/evidence_policy.py	1970-01-01 00:00:00.000000000 +0000
++++ solaryn_v9_work/src/evidence_policy.py	2026-08-19 13:54:06.197152792 +0000
+@@ -0,0 +1,144 @@
++from __future__ import annotations
++
++from pathlib import Path
++import numpy as np
++import pandas as pd
++
++
++DECISION_VALID_CEC_CELL_TYPES = {"monosi", "multisi", "polysi"}
++DEFAULT_ENERGY_RATING_UNCERTAINTY_GUARDRAIL_PCT = 2.0
++
++
++def _nonempty(value) -> bool:
++    if value is None:
++        return False
++    if isinstance(value, float) and np.isnan(value):
++        return False
++    return bool(str(value).strip())
++
++
++def matrix_path_for_module(row: pd.Series, root: str | Path | None = None) -> Path | None:
++    raw = row.get("iec61853_matrix_file", "")
++    if not _nonempty(raw):
++        return None
++    p = Path(str(raw))
++    if not p.is_absolute() and root is not None:
++        p = Path(root) / p
++    return p
++
++
++def electrical_model_policy(row: pd.Series, root: str | Path | None = None) -> dict:
++    """Select the least-assumptive electrical model supported by evidence.
++
++    Order of evidence:
++      1. module-specific measured IEC 61853 matrix;
++      2. datasheet-fitted CEC SDM for crystalline-silicon families;
++      3. exploratory CEC SDM for other families, explicitly barred from a robust
++         cross-technology winner until matrix/validated model evidence is supplied.
++    """
++    matrix_path = matrix_path_for_module(row, root)
++    if matrix_path is not None and matrix_path.exists():
++        return {
++            "electrical_model": "iec61853_module_specific_matrix",
++            "decision_eligible": True,
++            "model_evidence_level": "module_specific_measured_matrix",
++            "model_form_warning": "",
++            "matrix_path": str(matrix_path),
++        }
++
++    celltype = str(row.get("cec_celltype", "")).strip().lower()
++    if celltype in DECISION_VALID_CEC_CELL_TYPES:
++        return {
++            "electrical_model": "cec_single_diode_datasheet_fit",
++            "decision_eligible": True,
++            "model_evidence_level": "datasheet_fit_crystalline_silicon_fallback",
++            "model_form_warning": (
++                "No module-specific IEC 61853 G-T matrix: decision uses a datasheet-fitted "
++                "single-diode model and must retain an uncertainty guardrail."
++            ),
++            "matrix_path": None,
++        }
++
++    return {
++        "electrical_model": "cec_single_diode_exploratory_only",
++        "decision_eligible": False,
++        "model_evidence_level": "technology_model_not_validated_for_this_module",
++        "model_form_warning": (
++            "No module-specific IEC 61853 matrix or validated device-specific model. "
++            "This candidate may be displayed as exploratory but cannot determine the robust winner."
++        ),
++        "matrix_path": None,
++    }
++
++
++def spectral_evidence_policy(row: pd.Series) -> dict:
++    """Declare whether spectral correction may influence the primary decision.
++
++    V9 deliberately fails closed. A label such as ``module_specific_eqe`` is not
++    enough by itself: EQE must be coupled to time-resolved spectral irradiance (or a
++    validated module-specific spectral correction model) before it can alter energy.
++    The current PoC implements only pvlib's technology-class First Solar proxy, so
++    every spectral result is a sensitivity, never a primary winner-making term.
++    """
++    status = str(row.get("spectral_evidence_level", "technology_class_proxy")).strip().lower()
++    if status in {"module_specific_eqe", "module_specific_spectral_response", "validated_module_specific"}:
++        return {
++            "spectral_decision_eligible": False,
++            "spectral_evidence_level": status,
++            "spectral_policy": "module_specific_spectral_evidence_declared_but_time_resolved_spectral_engine_not_yet_implemented",
++        }
++    return {
++        "spectral_decision_eligible": False,
++        "spectral_evidence_level": status or "technology_class_proxy",
++        "spectral_policy": "technology_class_proxy_is_sensitivity_only",
++    }
++
++
++def thermal_evidence_policy(row: pd.Series) -> dict:
++    u0 = pd.to_numeric(pd.Series([row.get("thermal_u0_w_m2k")]), errors="coerce").iloc[0]
++    u1 = pd.to_numeric(pd.Series([row.get("thermal_u1_w_s_m3k")]), errors="coerce").iloc[0]
++    if np.isfinite(u0) and np.isfinite(u1) and u0 > 0 and u1 >= 0:
++        return {
++            "thermal_model": "Faiman IEC-61853 module-specific coefficients",
++            "thermal_evidence_level": "module_specific_u0_u1",
++            "u0": float(u0),
++            "u1": float(u1),
++        }
++    return {
++        "thermal_model": "SAPM construction-class proxy",
++        "thermal_evidence_level": "generic_construction_proxy",
++        "u0": None,
++        "u1": None,
++    }
++
++
++def project_segment_compatible(row: pd.Series, project_segment: str) -> bool:
++    project = str(project_segment).strip().lower()
++    raw = str(row.get("project_segment", "all")).strip().lower()
++    if not raw or raw == "nan" or raw == "all":
++        return True
++    tokens = {x.strip() for x in raw.replace(";", ",").split(",") if x.strip()}
++    aliases = {
++        "commercial": {"commercial", "c&i", "commercial_industrial"},
++        "c&i": {"commercial", "c&i", "commercial_industrial"},
++        "utility": {"utility", "utility_scale"},
++        "residential": {"residential", "rooftop"},
++        "rooftop": {"residential", "rooftop", "commercial", "c&i"},
++        "research": tokens | {project},
++    }
++    accepted = aliases.get(project, {project})
++    return bool(tokens & accepted)
++
++
++def add_evidence_columns(modules: pd.DataFrame, root: str | Path | None = None) -> pd.DataFrame:
++    out = modules.copy()
++    rows = []
++    for _, row in out.iterrows():
++        e = electrical_model_policy(row, root)
++        s = spectral_evidence_policy(row)
++        t = thermal_evidence_policy(row)
++        rows.append({**e, **s, **t})
++    meta = pd.DataFrame(rows, index=out.index)
++    for col in meta.columns:
++        out[col] = meta[col]
++    return out
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/iec61853_engine.py solaryn_v9_work/src/iec61853_engine.py
+--- v8_2_baseline/src/iec61853_engine.py	1970-01-01 00:00:00.000000000 +0000
++++ solaryn_v9_work/src/iec61853_engine.py	2026-08-19 13:42:13.566779058 +0000
+@@ -0,0 +1,212 @@
++from __future__ import annotations
++
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Iterable
++
++import numpy as np
++import pandas as pd
++from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
++
++
++REQUIRED_MATRIX_COLUMNS = ["irradiance_w_m2", "module_temperature_c", "pmax_w"]
++IEC_IRRADIANCE_REFERENCE_LEVELS = {100, 200, 400, 600, 800, 1000, 1100}
++IEC_TEMPERATURE_REFERENCE_LEVELS = {15, 25, 50, 75}
++
++
++@dataclass(frozen=True)
++class MatrixValidation:
++    measured_points: int
++    irradiance_min_w_m2: float
++    irradiance_max_w_m2: float
++    temperature_min_c: float
++    temperature_max_c: float
++    has_stc_anchor: bool
++    stc_relative_error_pct: float | None
++    reference_irradiance_levels_present: tuple[float, ...]
++    reference_temperature_levels_present: tuple[float, ...]
++    source_status: str
++
++
++def read_iec61853_matrix(path: str | Path) -> pd.DataFrame:
++    path = Path(path)
++    if not path.exists():
++        raise FileNotFoundError(f"IEC 61853 matrix file does not exist: {path}")
++    df = pd.read_csv(path)
++    return df
++
++
++def validate_iec61853_matrix(
++    matrix: pd.DataFrame,
++    *,
++    module_pmax_w: float | None = None,
++    source_status: str = "module_specific_measured",
++    require_minimum_points: int = 6,
++) -> MatrixValidation:
++    """Validate a module-specific IEC-61853-style G-T performance matrix.
++
++    The function deliberately validates evidence and geometry, not just syntax.
++    It accepts reduced matrices (minimum six well-chosen points), because the IEA
++    Task 13 report notes that reduced matrices can preserve energy-rating accuracy
++    when the points are well chosen. The caller must still expose the evidence
++    grade and any extrapolation fraction in the final result.
++    """
++    if matrix is None or matrix.empty:
++        raise ValueError("IEC 61853 performance matrix is empty.")
++    missing = [c for c in REQUIRED_MATRIX_COLUMNS if c not in matrix.columns]
++    if missing:
++        raise ValueError(f"IEC 61853 matrix is missing columns: {missing}")
++
++    m = matrix.copy()
++    for col in REQUIRED_MATRIX_COLUMNS:
++        m[col] = pd.to_numeric(m[col], errors="coerce")
++    if m[REQUIRED_MATRIX_COLUMNS].isna().any().any():
++        raise ValueError("IEC 61853 matrix contains non-numeric or missing G/T/Pmax values.")
++    if (m["irradiance_w_m2"] < 0).any():
++        raise ValueError("irradiance_w_m2 cannot be negative.")
++    if (m["pmax_w"] < 0).any():
++        raise ValueError("pmax_w cannot be negative.")
++    if m.duplicated(["irradiance_w_m2", "module_temperature_c"]).any():
++        raise ValueError("IEC 61853 matrix contains duplicate irradiance/temperature coordinates.")
++    if len(m) < int(require_minimum_points):
++        raise ValueError(
++            f"At least {require_minimum_points} independent G-T points are required for a reduced matrix."
++        )
++
++    gmin = float(m["irradiance_w_m2"].min())
++    gmax = float(m["irradiance_w_m2"].max())
++    tmin = float(m["module_temperature_c"].min())
++    tmax = float(m["module_temperature_c"].max())
++    if gmax < 800 or gmin > 200:
++        raise ValueError("Matrix does not span a useful low-to-high irradiance range.")
++    if tmax < 50 or tmin > 25:
++        raise ValueError("Matrix does not span a useful operating-temperature range.")
++
++    stc_mask = np.isclose(m["irradiance_w_m2"], 1000.0, atol=1e-6) & np.isclose(
++        m["module_temperature_c"], 25.0, atol=1e-6
++    )
++    has_stc = bool(stc_mask.any())
++    stc_err: float | None = None
++    if has_stc and module_pmax_w is not None and float(module_pmax_w) > 0:
++        stc_p = float(m.loc[stc_mask, "pmax_w"].iloc[0])
++        stc_err = 100.0 * abs(stc_p - float(module_pmax_w)) / float(module_pmax_w)
++        if stc_err > 3.0:
++            raise ValueError(
++                f"Measured 1000 W/m², 25°C Pmax differs from module nameplate by {stc_err:.2f}%; "
++                "verify module identity, stabilization state and units before using the matrix."
++            )
++
++    g_present = tuple(sorted(set(float(x) for x in m["irradiance_w_m2"].unique()) & IEC_IRRADIANCE_REFERENCE_LEVELS))
++    t_present = tuple(sorted(set(float(x) for x in m["module_temperature_c"].unique()) & IEC_TEMPERATURE_REFERENCE_LEVELS))
++
++    return MatrixValidation(
++        measured_points=len(m),
++        irradiance_min_w_m2=gmin,
++        irradiance_max_w_m2=gmax,
++        temperature_min_c=tmin,
++        temperature_max_c=tmax,
++        has_stc_anchor=has_stc,
++        stc_relative_error_pct=stc_err,
++        reference_irradiance_levels_present=g_present,
++        reference_temperature_levels_present=t_present,
++        source_status=str(source_status),
++    )
++
++
++def _build_interpolators(matrix: pd.DataFrame):
++    points = matrix[["irradiance_w_m2", "module_temperature_c"]].to_numpy(dtype=float)
++    values = matrix["pmax_w"].to_numpy(dtype=float)
++    # Linear interpolation is used inside the measured convex hull. Nearest-neighbour
++    # is ONLY a controlled fallback for holes/non-convex edges and is counted as a
++    # model-evidence penalty in the returned diagnostics.
++    linear = LinearNDInterpolator(points, values, fill_value=np.nan)
++    nearest = NearestNDInterpolator(points, values)
++    return linear, nearest
++
++
++def interpolate_iec61853_pmax(
++    matrix: pd.DataFrame,
++    irradiance_w_m2: Iterable[float] | pd.Series,
++    module_temperature_c: Iterable[float] | pd.Series,
++) -> tuple[pd.Series, dict]:
++    """Interpolate module Pmax over hourly G-T conditions.
++
++    Policy:
++    * G <= 0 -> P = 0.
++    * Temperature outside the measured range is clipped to the measured range and
++      counted as temperature extrapolation.
++    * Irradiance below/above the measured envelope is evaluated at the envelope and
++      scaled linearly with G; those hours are explicitly counted as irradiance
++      extrapolation.
++    * Holes inside the measured convex hull use nearest-neighbour fallback and are
++      counted. No hidden technology coefficient is inserted.
++
++    This is a transparent PoC interpolation layer, not a claim of exact IEC 61853-3
++    conformity. A production implementation should reproduce the standard's exact
++    interpolation/extrapolation procedure and carry laboratory measurement uncertainty.
++    """
++    m = matrix.copy()
++    for col in REQUIRED_MATRIX_COLUMNS:
++        m[col] = pd.to_numeric(m[col], errors="coerce")
++    validate_iec61853_matrix(m)
++
++    g = pd.Series(pd.to_numeric(pd.Series(list(irradiance_w_m2)), errors="coerce"), dtype=float)
++    t = pd.Series(pd.to_numeric(pd.Series(list(module_temperature_c)), errors="coerce"), dtype=float)
++    if len(g) != len(t):
++        raise ValueError("Irradiance and module-temperature arrays must have the same length.")
++    if g.isna().any() or t.isna().any():
++        raise ValueError("Hourly irradiance/temperature contains missing values.")
++
++    gmin, gmax = float(m["irradiance_w_m2"].min()), float(m["irradiance_w_m2"].max())
++    tmin, tmax = float(m["module_temperature_c"].min()), float(m["module_temperature_c"].max())
++    daylight = g > 0
++    g_low = daylight & (g < gmin)
++    g_high = daylight & (g > gmax)
++    t_out = daylight & ((t < tmin) | (t > tmax))
++
++    g_eval = g.clip(lower=gmin, upper=gmax)
++    t_eval = t.clip(lower=tmin, upper=tmax)
++    linear, nearest = _build_interpolators(m)
++    query = np.column_stack([g_eval.to_numpy(), t_eval.to_numpy()])
++    p = np.asarray(linear(query), dtype=float)
++    hole = daylight.to_numpy() & ~np.isfinite(p)
++    if hole.any():
++        p[hole] = np.asarray(nearest(query[hole]), dtype=float)
++
++    # Linear irradiance scaling is only applied outside the measured irradiance
++    # envelope; it is never used to create technology-specific low-light advantages.
++    scale = np.ones(len(g), dtype=float)
++    low_idx = g_low.to_numpy()
++    high_idx = g_high.to_numpy()
++    scale[low_idx] = g.to_numpy()[low_idx] / max(gmin, 1e-9)
++    scale[high_idx] = g.to_numpy()[high_idx] / max(gmax, 1e-9)
++    p = np.maximum(0.0, p * scale)
++    p[~daylight.to_numpy()] = 0.0
++
++    daylight_n = max(int(daylight.sum()), 1)
++    diagnostics = {
++        "matrix_hours_daylight": int(daylight.sum()),
++        "matrix_irradiance_extrapolation_fraction_pct": 100.0 * float((g_low | g_high).sum()) / daylight_n,
++        "matrix_temperature_extrapolation_fraction_pct": 100.0 * float(t_out.sum()) / daylight_n,
++        "matrix_nearest_fallback_fraction_pct": 100.0 * float(hole.sum()) / daylight_n,
++        "matrix_interpolation_policy": "linear_inside_measured_hull_explicit_envelope_extrapolation",
++    }
++    return pd.Series(p, index=getattr(irradiance_w_m2, "index", None)), diagnostics
++
++
++def build_matrix_template() -> pd.DataFrame:
++    rows = []
++    for g in [100, 200, 400, 600, 800, 1000, 1100]:
++        for t in [15, 25, 50, 75]:
++            # IEC 61853-1 omits several extreme combinations. Template Pmax is blank;
++            # never invent laboratory values.
++            if (g == 1100 and t == 15) or (g == 400 and t == 75) or (g in {100, 200} and t in {50, 75}):
++                continue
++            rows.append({
++                "irradiance_w_m2": g,
++                "module_temperature_c": t,
++                "pmax_w": np.nan,
++                "measurement_uncertainty_pct": np.nan,
++                "source_reference": "",
++            })
++    return pd.DataFrame(rows)
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/lifetime_engine.py solaryn_v9_work/src/lifetime_engine.py
+--- v8_2_baseline/src/lifetime_engine.py	2026-08-18 09:07:26.000000000 +0000
++++ solaryn_v9_work/src/lifetime_engine.py	2026-08-19 13:43:39.466779058 +0000
+@@ -1,20 +1,47 @@
+ from __future__ import annotations
+ 
+-import numpy as np
+ import pandas as pd
+ 
+ 
++def common_linear_degradation_curve(
++    annual_degradation_pct_year: float = 0.50,
++    years: int = 25,
++) -> pd.DataFrame:
++    """Common project degradation sensitivity applied identically to all modules.
++
++    This is deliberately not technology-specific. Until Solaryn has calibrated
++    BOM/module-specific field-degradation models, a common scenario prevents warranty
++    language or database defaults from manufacturing a technology winner.
++    """
++    y = int(years)
++    d = float(annual_degradation_pct_year)
++    if y < 1:
++        raise ValueError("years must be >= 1")
++    if d < 0:
++        raise ValueError("annual_degradation_pct_year cannot be negative.")
++    rows = []
++    start_ret = 100.0
++    for year in range(1, y + 1):
++        end_ret = max(0.0, 100.0 - d * year)
++        avg_ret = 0.5 * (start_ret + end_ret)
++        rows.append({
++            "year": year,
++            "start_of_year_retention_pct": start_ret,
++            "end_of_year_retention_pct": end_ret,
++            "annual_energy_retention_scenario_pct": avg_ret,
++        })
++        start_ret = end_ret
++    return pd.DataFrame(rows)
++
++
+ def warranty_retention_curve(
+     first_year_retention_pct: float,
+     annual_degradation_pct_year: float,
+     years: int = 25,
+ ) -> pd.DataFrame:
+-    """Translate manufacturer power-warranty endpoints into a transparent scenario.
++    """Translate manufacturer power-warranty endpoints into a transparent sensitivity.
+ 
+-    This is NOT an energy warranty and NOT a field-degradation prediction. For each
+-    operating year, Solaryn linearly interpolates the module's warranted end-of-year
+-    power-retention path and uses the average of the start/end retention as a simple
+-    energy-retention scenario.
++    This is NOT an energy warranty and NOT a field-degradation prediction.
+     """
+     y = int(years)
+     if y < 1:
+@@ -41,30 +68,50 @@
+     return pd.DataFrame(rows)
+ 
+ 
++def _lifetime_from_curve(new_module_annual_energy_kwh_kwp: float, curve: pd.DataFrame) -> float:
++    return float(
++        (
++            float(new_module_annual_energy_kwh_kwp)
++            * curve["annual_energy_retention_scenario_pct"] / 100.0
++        ).sum()
++    )
++
++
++def lifetime_energy_common_scenario(
++    new_module_annual_energy_kwh_kwp: float,
++    annual_degradation_pct_year: float = 0.50,
++    years: int = 25,
++) -> dict:
++    curve = common_linear_degradation_curve(annual_degradation_pct_year, years)
++    curve["annual_specific_energy_kwh_kwp"] = (
++        float(new_module_annual_energy_kwh_kwp)
++        * curve["annual_energy_retention_scenario_pct"] / 100.0
++    )
++    curve["cumulative_specific_energy_kwh_kwp"] = curve["annual_specific_energy_kwh_kwp"].cumsum()
++    return {
++        "curve": curve,
++        "lifetime_energy_common_degradation_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum()),
++        "year_25_common_scenario_end_retention_pct": float(curve.iloc[-1]["end_of_year_retention_pct"]),
++        "basis": "common_linear_project_degradation_sensitivity_same_for_all_candidates_not_field_prediction",
++    }
++
++
+ def lifetime_energy_from_warranty_scenario(
+     new_module_annual_energy_kwh_kwp: float,
+     first_year_retention_pct: float,
+     annual_degradation_pct_year: float,
+     years: int = 25,
+ ) -> dict:
+-    curve = warranty_retention_curve(
+-        first_year_retention_pct, annual_degradation_pct_year, years
+-    )
++    curve = warranty_retention_curve(first_year_retention_pct, annual_degradation_pct_year, years)
+     curve["annual_specific_energy_kwh_kwp"] = (
+         float(new_module_annual_energy_kwh_kwp)
+         * curve["annual_energy_retention_scenario_pct"] / 100.0
+     )
+-    curve["cumulative_specific_energy_kwh_kwp"] = (
+-        curve["annual_specific_energy_kwh_kwp"].cumsum()
+-    )
++    curve["cumulative_specific_energy_kwh_kwp"] = curve["annual_specific_energy_kwh_kwp"].cumsum()
+     return {
+         "curve": curve,
+-        "lifetime_energy_warranty_scenario_kwh_kwp": float(
+-            curve["annual_specific_energy_kwh_kwp"].sum()
+-        ),
+-        "end_of_year_25_warranty_retention_pct": float(
+-            curve.iloc[-1]["end_of_year_warranty_retention_pct"]
+-        ),
++        "lifetime_energy_warranty_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum()),
++        "end_of_year_25_warranty_retention_pct": float(curve.iloc[-1]["end_of_year_warranty_retention_pct"]),
+         "basis": "warranty_derived_linear_power_retention_scenario_not_energy_guarantee_or_field_prediction",
+     }
+ 
+@@ -73,24 +120,41 @@
+     results: pd.DataFrame,
+     modules: pd.DataFrame,
+     years: int = 25,
++    common_degradation_pct_year: float = 0.50,
+ ) -> pd.DataFrame:
++    """Add both bias-controlled common and manufacturer-warranty lifetime sensitivities."""
+     out = results.copy()
+     lookup = modules.set_index("module_id")
+-    lifetime = []
+-    end_ret = []
+-    bases = []
++    common_lifetime = []
++    common_end = []
++    warranty_lifetime = []
++    warranty_end = []
++    warranty_bases = []
+     for _, row in out.iterrows():
++        annual = float(row["annual_yield_kwh_kwp"])
++        common = lifetime_energy_common_scenario(
++            annual,
++            annual_degradation_pct_year=common_degradation_pct_year,
++            years=years,
++        )
+         m = lookup.loc[row["module_id"]]
+-        s = lifetime_energy_from_warranty_scenario(
+-            row["annual_yield_kwh_kwp"],
++        warranty = lifetime_energy_from_warranty_scenario(
++            annual,
+             m["first_year_retention_pct"],
+             m["annual_warranty_degradation_pct_year"],
+             years,
+         )
+-        lifetime.append(s["lifetime_energy_warranty_scenario_kwh_kwp"])
+-        end_ret.append(s["end_of_year_25_warranty_retention_pct"])
+-        bases.append(s["basis"])
+-    out["lifetime_energy_warranty_scenario_kwh_kwp"] = lifetime
+-    out["year_25_warranty_end_retention_pct"] = end_ret
+-    out["lifetime_scenario_basis"] = bases
++        common_lifetime.append(common["lifetime_energy_common_degradation_scenario_kwh_kwp"])
++        common_end.append(common["year_25_common_scenario_end_retention_pct"])
++        warranty_lifetime.append(warranty["lifetime_energy_warranty_scenario_kwh_kwp"])
++        warranty_end.append(warranty["end_of_year_25_warranty_retention_pct"])
++        warranty_bases.append(warranty["basis"])
++
++    out["lifetime_energy_common_degradation_scenario_kwh_kwp"] = common_lifetime
++    out["year_25_common_scenario_end_retention_pct"] = common_end
++    out["common_degradation_scenario_pct_year"] = float(common_degradation_pct_year)
++    out["common_lifetime_scenario_basis"] = "same_project_degradation_sensitivity_for_all_candidates"
++    out["lifetime_energy_warranty_scenario_kwh_kwp"] = warranty_lifetime
++    out["year_25_warranty_end_retention_pct"] = warranty_end
++    out["lifetime_scenario_basis"] = warranty_bases
+     return out
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/module_iv_engine.py solaryn_v9_work/src/module_iv_engine.py
+--- v8_2_baseline/src/module_iv_engine.py	2026-08-18 09:07:26.000000000 +0000
++++ solaryn_v9_work/src/module_iv_engine.py	2026-08-19 13:54:06.197716532 +0000
+@@ -1,10 +1,22 @@
+ from __future__ import annotations
+ 
++from pathlib import Path
+ from typing import Dict
+ 
+ import numpy as np
+ import pandas as pd
+ 
++from src.evidence_policy import (
++    electrical_model_policy,
++    spectral_evidence_policy,
++    thermal_evidence_policy,
++)
++from src.iec61853_engine import (
++    interpolate_iec61853_pmax,
++    read_iec61853_matrix,
++    validate_iec61853_matrix,
++)
++
+ try:
+     import pvlib
+ except ImportError:
+@@ -24,12 +36,17 @@
+ def require_pvlib() -> None:
+     if pvlib is None:
+         raise ImportError(
+-            "EPC IV mode requires pvlib and NREL-PySAM. "
+-            "Install project requirements before running this mode."
++            "EPC physics mode requires pvlib. Datasheet CEC fitting also requires NREL-PySAM. "
++            "Install project requirements before running live hourly simulations."
+         )
+ 
+ 
+ def validate_module_candidates(df: pd.DataFrame) -> None:
++    """Reject impossible/incomplete candidate records before nonlinear modeling.
++
++    This validation is intentionally strict. Solaryn must fail closed rather than
++    compensate for missing or inconsistent module data with technology heuristics.
++    """
+     missing = [c for c in REQUIRED_MODULE_FIELDS if c not in df.columns]
+     if missing:
+         raise ValueError(f"Module candidate table is missing required columns: {missing}")
+@@ -45,16 +62,19 @@
+         if vals.isna().any() or (vals <= 0).any():
+             raise ValueError(f"{col} must contain positive numeric values for every selected module.")
+ 
+-    if (pd.to_numeric(df["first_year_retention_pct"], errors="coerce") <= 0).any():
+-        raise ValueError("first_year_retention_pct must be positive.")
+-    if (pd.to_numeric(df["annual_warranty_degradation_pct_year"], errors="coerce") < 0).any():
++    r1 = pd.to_numeric(df["first_year_retention_pct"], errors="coerce")
++    if r1.isna().any() or ((r1 <= 0) | (r1 > 100)).any():
++        raise ValueError("first_year_retention_pct must be in (0,100].")
++    d = pd.to_numeric(df["annual_warranty_degradation_pct_year"], errors="coerce")
++    if d.isna().any() or (d < 0).any():
+         raise ValueError("annual_warranty_degradation_pct_year cannot be negative.")
+ 
+-    # Datasheet consistency checks. These catch common AI/CSV transcription errors
+-    # before a nonlinear model is fitted to physically impossible STC points.
+     for _, row in df.iterrows():
+-        pmax = float(row["pmax_w"]); vmp = float(row["vmp_v"]); imp = float(row["imp_a"])
+-        voc = float(row["voc_v"]); isc = float(row["isc_a"])
++        pmax = float(row["pmax_w"])
++        vmp = float(row["vmp_v"])
++        imp = float(row["imp_a"])
++        voc = float(row["voc_v"])
++        isc = float(row["isc_a"])
+         if not (0 < vmp < voc):
+             raise ValueError(f"{row['module_id']}: require 0 < Vmp < Voc.")
+         if not (0 < imp < isc):
+@@ -65,9 +85,11 @@
+                 f"{row['module_id']}: Vmp×Imp differs from Pmax by {residual:.1%}; "
+                 "verify the datasheet row/units before fitting the IV model."
+             )
+-        if float(row["gamma_pmax_pct_c"]) > 0:
++        gamma = float(row["gamma_pmax_pct_c"])
++        beta = float(row["beta_voc_pct_c"])
++        if gamma > 0:
+             raise ValueError(f"{row['module_id']}: gamma_pmax_pct_c should normally be negative; verify the datasheet.")
+-        if float(row["beta_voc_pct_c"]) > 0:
++        if beta > 0:
+             raise ValueError(f"{row['module_id']}: beta_voc_pct_c should normally be negative; verify the datasheet.")
+         cells = float(row["cells_in_series"])
+         if abs(cells - round(cells)) > 1e-9:
+@@ -89,11 +111,12 @@
+ 
+ 
+ def spectral_factor_for_module(weather: pd.DataFrame, row: pd.Series) -> pd.Series:
+-    """First-order technology-class spectral mismatch factor.
++    """Technology-class spectral factor used ONLY as a sensitivity by default.
+ 
+-    The factor modifies effective irradiance / photocurrent, not POA itself.
+-    Daylight hours outside the documented model domain are treated as an error
+-    instead of silently forcing a neutral spectral factor.
++    IEA Task 13 emphasizes that spectral response can vary materially within the same
++    technology because of cell quality, coatings, encapsulation and glass. Therefore a
++    technology-class proxy is never allowed to silently become the primary decision
++    energy unless module-specific spectral evidence is explicitly supplied.
+     """
+     require_pvlib()
+     module_type = _spectral_module_type(row)
+@@ -101,9 +124,7 @@
+         return pd.Series(1.0, index=weather.index, dtype=float)
+ 
+     if "airmass_absolute" not in weather or "precipitable_water_cm" not in weather:
+-        raise ValueError(
+-            "Spectral-ready weather requires airmass_absolute and precipitable_water_cm."
+-        )
++        raise ValueError("Spectral-ready weather requires airmass_absolute and precipitable_water_cm.")
+ 
+     am = pd.to_numeric(weather["airmass_absolute"], errors="coerce")
+     pw = pd.to_numeric(weather["precipitable_water_cm"], errors="coerce")
+@@ -118,21 +139,19 @@
+         index=weather.index,
+         dtype=float,
+     )
+-
+     daylight = poa > 20.0
+     invalid_daylight = daylight & (~np.isfinite(factor))
+     if invalid_daylight.any():
+         pct = 100.0 * float(invalid_daylight.sum()) / max(float(daylight.sum()), 1.0)
+         raise ValueError(
+-            f"Spectral model is outside its valid input domain for {pct:.1f}% "
+-            f"of daylight hours for {row['manufacturer']} {row['model']}."
++            f"Spectral proxy is outside its valid input domain for {pct:.1f}% of daylight hours "
++            f"for {row['manufacturer']} {row['model']}."
+         )
+-
+     factor.loc[~daylight] = 1.0
+     return factor
+ 
+ 
+-def _temperature_parameters(row: pd.Series) -> dict:
++def _sapm_temperature_parameters(row: pd.Series) -> dict:
+     require_pvlib()
+     construction = str(row.get("thermal_construction", "")).lower()
+     if "glass_glass" in construction:
+@@ -142,31 +161,65 @@
+     return pvlib.temperature.TEMPERATURE_MODEL_PARAMETERS["sapm"][key]
+ 
+ 
+-def module_cell_temperature(weather: pd.DataFrame, row: pd.Series) -> pd.Series:
+-    """Module-construction-aware SAPM cell temperature using 10 m wind."""
++def module_operating_temperatures(weather: pd.DataFrame, row: pd.Series) -> tuple[pd.Series, pd.Series]:
++    """Return (module_temperature, cell_temperature) with explicit evidence policy.
++
++    IEC 61853 G-T matrices are indexed by module/device temperature. The CEC
++    single-diode model expects cell temperature. When module-specific Faiman U0/U1
++    coefficients are supplied, pvlib/IEC usage does not distinguish between the two,
++    so the same value is used for both. Otherwise SAPM module and cell temperatures
++    are calculated separately using a transparent construction-class fallback.
++
++    Thermal driving irradiance uses the common AOI-corrected POA (not the spectral
++    sensitivity), matching the IEC energy-rating concept more closely and preventing a
++    technology-class spectral proxy from changing module temperature.
++    """
+     require_pvlib()
+-    params = _temperature_parameters(row)
+-    return pd.Series(
++    poa = pd.to_numeric(
++        weather.get("poa_optical_w_m2", weather["poa_w_m2"]), errors="coerce"
++    ).fillna(0).clip(lower=0)
++    ta = pd.to_numeric(weather["temp_air_c"], errors="coerce").interpolate(limit_direction="both")
++    wind = pd.to_numeric(weather["wind_speed_m_s"], errors="coerce").interpolate(limit_direction="both").clip(lower=0.1)
++    thermal = thermal_evidence_policy(row)
++    if thermal["thermal_evidence_level"] == "module_specific_u0_u1":
++        t = pd.Series(
++            pvlib.temperature.faiman(
++                poa_global=poa, temp_air=ta, wind_speed=wind,
++                u0=thermal["u0"], u1=thermal["u1"],
++            ),
++            index=weather.index, dtype=float,
++        )
++        return t, t.copy()
++
++    params = _sapm_temperature_parameters(row)
++    t_module = pd.Series(
++        pvlib.temperature.sapm_module(
++            poa_global=poa, temp_air=ta, wind_speed=wind,
++            a=params["a"], b=params["b"],
++        ),
++        index=weather.index, dtype=float,
++    )
++    t_cell = pd.Series(
+         pvlib.temperature.sapm_cell(
+-            poa_global=pd.to_numeric(weather["poa_w_m2"], errors="coerce").fillna(0).clip(lower=0),
+-            temp_air=pd.to_numeric(weather["temp_air_c"], errors="coerce").interpolate(limit_direction="both"),
+-            wind_speed=pd.to_numeric(weather["wind_speed_m_s"], errors="coerce").interpolate(limit_direction="both").clip(lower=0.1),
+-            **params,
++            poa_global=poa, temp_air=ta, wind_speed=wind, **params,
+         ),
+-        index=weather.index,
+-        dtype=float,
++        index=weather.index, dtype=float,
+     )
++    return t_module, t_cell
++
++
++def module_cell_temperature(weather: pd.DataFrame, row: pd.Series) -> pd.Series:
++    """Backward-compatible helper returning cell temperature only."""
++    return module_operating_temperatures(weather, row)[1]
+ 
+ 
+ def fit_cec_from_datasheet(row: pd.Series) -> Dict[str, float]:
+-    """Fit CEC single-diode parameters from a sourced commercial-module datasheet."""
++    """Fit CEC single-diode parameters from sourced module-datasheet values."""
+     require_pvlib()
+-
+     isc = float(row["isc_a"])
+     voc = float(row["voc_v"])
+     alpha_sc = isc * float(row["alpha_isc_pct_c"]) / 100.0
+     beta_voc = voc * float(row["beta_voc_pct_c"]) / 100.0
+-
+     try:
+         fitted = pvlib.ivtools.sdm.fit_cec_sam(
+             celltype=str(row["cec_celltype"]),
+@@ -182,15 +235,13 @@
+         )
+     except ImportError as exc:
+         raise ImportError(
+-            "CEC datasheet fitting requires NREL-PySAM in addition to pvlib. "
+-            "Run `pip install -r requirements.txt`."
++            "CEC datasheet fitting requires NREL-PySAM in addition to pvlib. Run `pip install -r requirements.txt`."
+         ) from exc
+     except RuntimeError as exc:
+         raise RuntimeError(
+             f"CEC parameter extraction failed for {row['manufacturer']} {row['model']}. "
+-            "Do not substitute invented diode parameters; verify the datasheet inputs/cell count."
++            "Do not substitute invented diode parameters; verify datasheet inputs/cell count."
+         ) from exc
+-
+     names = ["I_L_ref", "I_o_ref", "R_s", "R_sh_ref", "a_ref", "Adjust"]
+     out = dict(zip(names, map(float, fitted)))
+     out["alpha_sc_A_C"] = alpha_sc
+@@ -198,24 +249,18 @@
+     return out
+ 
+ 
+-def _pmp_from_cec(
+-    effective_irradiance: pd.Series,
+-    temp_cell_c: pd.Series,
+-    fit: Dict[str, float],
+-) -> pd.Series:
++def _pmp_from_cec(effective_irradiance: pd.Series, temp_cell_c: pd.Series, fit: Dict[str, float]) -> pd.Series:
+     require_pvlib()
+-    photocurrent, saturation_current, resistance_series, resistance_shunt, nNsVth = (
+-        pvlib.pvsystem.calcparams_cec(
+-            effective_irradiance=effective_irradiance,
+-            temp_cell=temp_cell_c,
+-            alpha_sc=fit["alpha_sc_A_C"],
+-            a_ref=fit["a_ref"],
+-            I_L_ref=fit["I_L_ref"],
+-            I_o_ref=fit["I_o_ref"],
+-            R_sh_ref=fit["R_sh_ref"],
+-            R_s=fit["R_s"],
+-            Adjust=fit["Adjust"],
+-        )
++    photocurrent, saturation_current, resistance_series, resistance_shunt, nNsVth = pvlib.pvsystem.calcparams_cec(
++        effective_irradiance=effective_irradiance,
++        temp_cell=temp_cell_c,
++        alpha_sc=fit["alpha_sc_A_C"],
++        a_ref=fit["a_ref"],
++        I_L_ref=fit["I_L_ref"],
++        I_o_ref=fit["I_o_ref"],
++        R_sh_ref=fit["R_sh_ref"],
++        R_s=fit["R_s"],
++        Adjust=fit["Adjust"],
+     )
+     sd = pvlib.pvsystem.singlediode(
+         photocurrent=photocurrent,
+@@ -232,78 +277,139 @@
+     raise TypeError("Unexpected pvlib.singlediode return type.")
+ 
+ 
++def _pmp_for_model(
++    effective_irradiance: pd.Series,
++    temp_module_c: pd.Series,
++    row: pd.Series,
++    model_policy: dict,
++) -> tuple[pd.Series, dict]:
++    if model_policy["electrical_model"] == "iec61853_module_specific_matrix":
++        matrix = read_iec61853_matrix(model_policy["matrix_path"])
++        val = validate_iec61853_matrix(
++            matrix,
++            module_pmax_w=float(row["pmax_w"]),
++            source_status="module_specific_measured",
++        )
++        p, diag = interpolate_iec61853_pmax(matrix, effective_irradiance, temp_module_c)
++        diag.update({
++            "matrix_measured_points": val.measured_points,
++            "matrix_has_stc_anchor": val.has_stc_anchor,
++            "matrix_stc_relative_error_pct": val.stc_relative_error_pct,
++        })
++        return p.set_axis(effective_irradiance.index), diag
++
++    fit = fit_cec_from_datasheet(row)
++    p = _pmp_from_cec(effective_irradiance, temp_module_c, fit)
++    return p, {
++        "matrix_measured_points": 0,
++        "matrix_has_stc_anchor": False,
++        "matrix_stc_relative_error_pct": np.nan,
++        "matrix_irradiance_extrapolation_fraction_pct": np.nan,
++        "matrix_temperature_extrapolation_fraction_pct": np.nan,
++        "matrix_nearest_fallback_fraction_pct": np.nan,
++        "matrix_interpolation_policy": "not_applicable_cec_single_diode",
++    }
++
++
+ def simulate_module_hourly(
+     weather: pd.DataFrame,
+     row: pd.Series,
+     common_soiling_loss_pct: float = 2.0,
++    root: str | Path | None = None,
+ ) -> tuple[dict, pd.DataFrame]:
+-    """Simulate one actual module candidate with a CEC five-parameter diode model.
++    """Simulate one commercial module without technology-score shortcuts.
+ 
+-    Returns a summary and hourly trace. All candidates receive the same site-level
+-    soiling assumption; technology-specific soiling proxies from the research
+-    database do not enter EPC procurement results.
++    The primary annual energy is broadband unless module-specific spectral evidence is
++    available. Technology-class spectral response is retained only as a sensitivity.
++    Thin-film/non-c-Si candidates without module-specific performance-matrix evidence are
++    explicitly marked decision-ineligible to prevent single-diode model-form bias.
+     """
+     require_pvlib()
+     validate_module_candidates(pd.DataFrame([row]))
+ 
++    model_policy = electrical_model_policy(row, root)
++    spectral_policy = spectral_evidence_policy(row)
++    thermal_policy = thermal_evidence_policy(row)
++
+     soiling_ratio = 1.0 - max(0.0, min(100.0, float(common_soiling_loss_pct))) / 100.0
+     poa_raw = pd.to_numeric(weather["poa_w_m2"], errors="coerce").fillna(0).clip(lower=0)
+-    poa = pd.to_numeric(
+-        weather.get("poa_optical_w_m2", weather["poa_w_m2"]), errors="coerce"
+-    ).fillna(0).clip(lower=0)
++    poa_optical = pd.to_numeric(weather.get("poa_optical_w_m2", weather["poa_w_m2"]), errors="coerce").fillna(0).clip(lower=0)
+     spectrum = spectral_factor_for_module(weather, row)
+-    temp_cell = module_cell_temperature(weather, row)
+-    fit = fit_cec_from_datasheet(row)
++    temp_module, temp_cell = module_operating_temperatures(weather, row)
++    electrical_temperature = (
++        temp_module if model_policy["electrical_model"] == "iec61853_module_specific_matrix" else temp_cell
++    )
+ 
+-    effective = (poa * spectrum * soiling_ratio).clip(lower=0.0)
+-    effective_no_spectral = (poa * soiling_ratio).clip(lower=0.0)
++    effective_broadband = (poa_optical * soiling_ratio).clip(lower=0.0)
++    effective_spectral_proxy = (poa_optical * spectrum * soiling_ratio).clip(lower=0.0)
+ 
+-    pmp = _pmp_from_cec(effective, temp_cell, fit)
+-    pmp_no_spectral = _pmp_from_cec(effective_no_spectral, temp_cell, fit)
++    pmp_broadband, model_diag = _pmp_for_model(effective_broadband, electrical_temperature, row, model_policy)
++    pmp_spectral, _ = _pmp_for_model(effective_spectral_proxy, electrical_temperature, row, model_policy)
+ 
+     pmax = float(row["pmax_w"])
+-    specific_power_kw_per_kwp = pmp / pmax
+-    specific_power_no_spectral = pmp_no_spectral / pmax
+-
+-    weights = pd.to_numeric(
+-        weather.get("days_weight", pd.Series(1.0, index=weather.index)),
+-        errors="coerce",
+-    ).fillna(1.0)
+-    annual_yield = float((specific_power_kw_per_kwp * weights).sum())
+-    no_spectral_yield = float((specific_power_no_spectral * weights).sum())
++    specific_broadband = pmp_broadband / pmax
++    specific_spectral = pmp_spectral / pmax
++    weights = pd.to_numeric(weather.get("days_weight", pd.Series(1.0, index=weather.index)), errors="coerce").fillna(1.0)
++    broadband_yield = float((specific_broadband * weights).sum())
++    spectral_yield = float((specific_spectral * weights).sum())
++
++    # Primary decision energy does not use a generic technology-class spectral proxy.
++    if spectral_policy["spectral_decision_eligible"]:
++        decision_yield = spectral_yield
++        decision_spectral_basis = "module_specific_spectral_evidence"
++    else:
++        decision_yield = broadband_yield
++        decision_spectral_basis = "broadband_primary_technology_class_spectral_is_sensitivity_only"
+ 
+-    daylight = poa > 20.0
++    daylight = poa_optical > 20.0
+     summary = {
+         "module_id": row["module_id"],
+         "technology_id": row["technology_id"],
+         "manufacturer": row["manufacturer"],
+         "model": row["model"],
+         "technology_label": row.get("technology_label", ""),
+-        "annual_dc_specific_energy_kwh_kwp": annual_yield,
+-        "annual_yield_kwh_kwp": annual_yield,  # compatibility alias
+-        "annual_dc_specific_energy_no_spectral_kwh_kwp": no_spectral_yield,
+-        "annual_yield_no_spectral_kwh_kwp": no_spectral_yield,  # compatibility alias
+-        "annual_front_surface_poa_kwh_m2": float(poa_raw.sum() / 1000.0),
+-        "annual_optically_effective_poa_kwh_m2": float(poa.sum() / 1000.0),
+-        "iam_effect_pct": (float(poa.sum()/max(poa_raw.sum(), 1e-9)) - 1.0) * 100.0,
+-        "spectral_effect_pct": (
+-            (annual_yield / no_spectral_yield - 1.0) * 100.0 if no_spectral_yield > 0 else np.nan
+-        ),
++        "annual_dc_specific_energy_kwh_kwp": decision_yield,
++        "annual_yield_kwh_kwp": decision_yield,
++        "annual_dc_specific_energy_broadband_kwh_kwp": broadband_yield,
++        "annual_dc_specific_energy_no_spectral_kwh_kwp": broadband_yield,
++        "annual_dc_specific_energy_spectral_sensitivity_kwh_kwp": spectral_yield,
++        "annual_yield_no_spectral_kwh_kwp": broadband_yield,
++        "annual_front_surface_poa_kwh_m2": float((poa_raw * weights).sum() / 1000.0),
++        "annual_optically_effective_poa_kwh_m2": float((poa_optical * weights).sum() / 1000.0),
++        "iam_effect_pct": (float((poa_optical * weights).sum() / max((poa_raw * weights).sum(), 1e-9)) - 1.0) * 100.0,
++        "spectral_effect_pct": ((spectral_yield / broadband_yield - 1.0) * 100.0 if broadband_yield > 0 else np.nan),
++        "avg_module_temperature_c_daylight": float(temp_module[daylight].mean()) if daylight.any() else np.nan,
++        "p95_module_temperature_c_daylight": float(temp_module[daylight].quantile(0.95)) if daylight.any() else np.nan,
+         "avg_cell_temperature_c_daylight": float(temp_cell[daylight].mean()) if daylight.any() else np.nan,
+         "p95_cell_temperature_c_daylight": float(temp_cell[daylight].quantile(0.95)) if daylight.any() else np.nan,
+         "max_cell_temperature_c": float(temp_cell.max()),
+         "mean_spectral_factor_daylight": float(spectrum[daylight].mean()) if daylight.any() else 1.0,
+-        "cec_fit_status": "fitted_from_manufacturer_datasheet",
+-        "soiling_basis": "common_site_assumption",
++        "electrical_model": model_policy["electrical_model"],
++        "decision_eligible": bool(model_policy["decision_eligible"]),
++        "model_evidence_level": model_policy["model_evidence_level"],
++        "model_form_warning": model_policy["model_form_warning"],
++        "spectral_decision_eligible": bool(spectral_policy["spectral_decision_eligible"]),
++        "spectral_evidence_level": spectral_policy["spectral_evidence_level"],
++        "spectral_policy": spectral_policy["spectral_policy"],
++        "decision_spectral_basis": decision_spectral_basis,
++        "soiling_basis": "common_site_assumption_no_technology_score",
+         "soiling_loss_pct": float(common_soiling_loss_pct),
+-        "thermal_model": "SAPM construction-specific open-rack",
++        "thermal_model": thermal_policy["thermal_model"],
++        "thermal_evidence_level": thermal_policy["thermal_evidence_level"],
++        **model_diag,
+     }
+ 
+     hourly = weather.copy()
+     hourly["module_id"] = row["module_id"]
++    hourly["module_temperature_c"] = temp_module
+     hourly["module_cell_temperature_c"] = temp_cell
++    hourly["electrical_model_temperature_c"] = electrical_temperature
+     hourly["spectral_factor"] = spectrum
+-    hourly["effective_irradiance_w_m2"] = effective
+-    hourly["module_pmp_w"] = pmp
+-    hourly["specific_power_kw_per_kwp"] = specific_power_kw_per_kwp
++    hourly["effective_irradiance_broadband_w_m2"] = effective_broadband
++    hourly["effective_irradiance_spectral_proxy_w_m2"] = effective_spectral_proxy
++    hourly["effective_irradiance_w_m2"] = effective_broadband
++    hourly["module_pmp_broadband_w"] = pmp_broadband
++    hourly["module_pmp_spectral_proxy_w"] = pmp_spectral
++    hourly["module_pmp_w"] = pmp_broadband if not spectral_policy["spectral_decision_eligible"] else pmp_spectral
++    hourly["specific_power_kw_per_kwp"] = hourly["module_pmp_w"] / pmax
+     return summary, hourly
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/src/pvlib_pipeline.py solaryn_v9_work/src/pvlib_pipeline.py
+--- v8_2_baseline/src/pvlib_pipeline.py	2026-08-18 09:07:26.000000000 +0000
++++ solaryn_v9_work/src/pvlib_pipeline.py	2026-08-19 13:56:03.699789923 +0000
+@@ -19,22 +19,27 @@
+ 
+ 
+ def _pressure_to_pa(power_pressure: pd.Series) -> tuple[pd.Series, str]:
+-    """Convert NASA POWER pressure to Pa using a magnitude guard.
++    """Convert NASA POWER ``PS`` to Pa with sanity-checked unit handling.
+ 
+-    POWER community output commonly expresses surface pressure on a kPa-like scale.
+-    We avoid a hard-coded unit assumption by checking magnitude and expose the
+-    conversion source in the weather table. If pressure is unavailable, standard
+-    atmosphere is used only for the screening spectral correction.
++    POWER's renewable-energy API serves surface pressure in kPa. The guarded
++    hPa/Pa branches are retained only to fail safely on externally supplied tables
++    or legacy exports. This fixes the previous ambiguous ``<2000`` magnitude rule,
++    which could misread ~1000 hPa as 1000 kPa.
+     """
+     p = power_pressure.astype(float).copy()
+     med = float(p.dropna().median()) if p.notna().any() else np.nan
+     if not np.isfinite(med):
+-        return pd.Series(101325.0, index=p.index), "standard atmosphere fallback"
+-    if med < 2000.0:
+-        return p * 1000.0, "NASA POWER PS interpreted as kPa"
+-    if med < 20000.0:
+-        return p * 100.0, "NASA POWER PS interpreted as hPa"
+-    return p, "NASA POWER PS interpreted as Pa"
++        return pd.Series(101325.0, index=p.index), "standard atmosphere fallback; NASA PS missing"
++    if 20.0 <= med <= 120.0:
++        return p * 1000.0, "NASA POWER PS in kPa -> Pa"
++    if 200.0 <= med <= 1200.0:
++        return p * 100.0, "pressure interpreted as hPa -> Pa (legacy/external guard)"
++    if 20000.0 <= med <= 120000.0:
++        return p, "pressure already in Pa (legacy/external guard)"
++    raise ValueError(
++        f"Surface-pressure magnitude is not physically interpretable (median={med:.3f}). "
++        "Verify NASA POWER PS units before spectral/air-mass calculation."
++    )
+ 
+ 
+ def nasa_hourly_to_pvlib_weather(
+@@ -77,10 +82,18 @@
+     dhi_source = np.where(nasa_dhi.notna(), "NASA POWER hourly", "pvlib Erbs from NASA hourly GHI")
+ 
+     tilt, azimuth = default_fixed_tilt_geometry(latitude, tilt_deg, azimuth_deg)
++
++    # V9 bias correction: use an anisotropic diffuse transposition model rather than
++    # isotropic sky diffuse. This matters when comparing climates with very different
++    # diffuse fractions (e.g. Brussels vs arid sites). Perez-Driesse is available in
++    # pvlib >=0.13 and requires extraterrestrial DNI and relative air mass.
++    airmass_relative = location.get_airmass(solar_position=solpos)["airmass_relative"]
++    dni_extra = pd.Series(pvlib.irradiance.get_extra_radiation(times), index=times, dtype=float)
+     poa = pvlib.irradiance.get_total_irradiance(
+         surface_tilt=tilt, surface_azimuth=azimuth,
+         solar_zenith=solpos["apparent_zenith"], solar_azimuth=solpos["azimuth"],
+-        dni=dni, ghi=ghi, dhi=dhi, albedo=float(albedo), model="isotropic",
++        dni=dni, ghi=ghi, dhi=dhi, dni_extra=dni_extra, airmass=airmass_relative,
++        albedo=float(albedo), model="perez-driesse",
+     )
+ 
+     # Common front-glass incidence-angle loss. This corrects absolute module DC
+@@ -115,7 +128,6 @@
+         temp_air=temp_air, wind_speed=wind, **temp_params,
+     )
+ 
+-    airmass_relative = location.get_airmass(solar_position=solpos)["airmass_relative"]
+     pressure_pa, pressure_source = _pressure_to_pa(_series(df, "PS", times))
+     airmass_absolute = pvlib.atmosphere.get_absolute_airmass(airmass_relative, pressure_pa)
+     precipitable_water = pvlib.atmosphere.gueymard94_pw(temp_air, rh)
+@@ -145,6 +157,7 @@
+         "precipitable_water_cm": pd.Series(precipitable_water, index=times).to_numpy(),
+         "pressure_pa": pressure_pa.to_numpy(), "pressure_source": pressure_source,
+         "surface_tilt_deg": tilt, "surface_azimuth_deg": azimuth,
++        "poa_transposition_model": "perez-driesse",
+         "poa_w_m2": poa["poa_global"].fillna(0).clip(lower=0).to_numpy(),
+         "poa_direct_w_m2": poa["poa_direct"].fillna(0).clip(lower=0).to_numpy(),
+         "poa_sky_diffuse_w_m2": poa["poa_sky_diffuse"].fillna(0).clip(lower=0).to_numpy(),
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/app/epc_module_mode.py solaryn_v9_work/app/epc_module_mode.py
+--- v8_2_baseline/app/epc_module_mode.py	2026-08-18 09:14:10.000000000 +0000
++++ solaryn_v9_work/app/epc_module_mode.py	2026-08-19 13:54:59.177455637 +0000
+@@ -20,6 +20,7 @@
+ from src.degradation_stress import compute_stress_exposures
+ from src.economics_engine import switching_point_table
+ from src.epc_decision import epc_energy_decision
++from src.evidence_policy import project_segment_compatible, DEFAULT_ENERGY_RATING_UNCERTAINTY_GUARDRAIL_PCT
+ from src.epc_report import build_epc_html_report
+ 
+ 
+@@ -48,13 +49,13 @@
+     st.markdown(
+         """
+         <div class="solaryn-hero">
+-          <div class="solaryn-eyebrow">V8.2 · EPC module comparison · original Solaryn database preserved</div>
++          <div class="solaryn-eyebrow">V9 · Bias-corrected module comparison · IEC-61853 evidence hierarchy</div>
+           <div class="solaryn-title">SOLARYN</div>
+           <div class="solaryn-subtitle">
+-            EPC procurement validation mode. Real commercial module datasheet → CEC five-parameter
+-            single-diode model → hourly climate / IAM / spectral / thermal response → warranty-derived lifetime
+-            scenario → stress exposure → switching-point economics. No heuristic material score is allowed
+-            to choose the EPC winner.
++            Bias-corrected validation mode. Real module evidence → module-specific IEC 61853 G-T matrix when available,
++            otherwise a transparent c-Si single-diode fallback → full-year hourly climate / AOI / thermal physics →
++            common-degradation lifetime sensitivity → uncertainty guardrail → switching-point economics. Technology-class
++            spectral and manufacturer-warranty effects are sensitivities, not hidden winner-making scores.
+           </div>
+         </div>
+         """,
+@@ -63,8 +64,8 @@
+ 
+     st.info(
+         "This mode does not replace Solaryn's 30-technology/material database. "
+-        "It adds a stricter module-level path for real EPC offers. The seeded modules are "
+-        "reference records for validation; replace them with the actual EPC offers whenever possible."
++        "It adds a stricter module-level path for real offers. The seeded modules are reference records; "
++        "replace them with actual comparable offers and module-specific IEC 61853 / spectral / thermal evidence whenever available."
+     )
+ 
+     st.session_state.setdefault("selected_lat", 24.7136)
+@@ -87,7 +88,7 @@
+         with c5:
+             min_sep = st.number_input(
+                 "Decision separation policy (%)", min_value=0.0, max_value=10.0, value=1.0, step=0.25,
+-                help="Policy threshold, not statistical confidence. Solaryn refuses a robust winner when the lead is smaller."
++                help="User policy threshold. The actual required gap is the larger of this value and the uncertainty guardrail."
+             )
+ 
+         e1, e2, e3, e4 = st.columns(4)
+@@ -103,6 +104,24 @@
+         with e4:
+             use_pvgis = st.toggle("PVGIS POA cross-check", value=True)
+ 
++        g1, g2, g3 = st.columns(3)
++        with g1:
++            common_degradation = st.number_input(
++                "Common degradation sensitivity (%/year)", min_value=0.0, max_value=3.0, value=0.50, step=0.05,
++                help="Applied identically to all candidates. Manufacturer warranty slopes are shown separately as sensitivity only."
++            )
++        with g2:
++            uncertainty_guardrail = st.number_input(
++                "Energy-rating uncertainty guardrail (%)", min_value=0.0, max_value=10.0,
++                value=float(DEFAULT_ENERGY_RATING_UNCERTAINTY_GUARDRAIL_PCT), step=0.25,
++                help="Screening guardrail, not a confidence interval. The default is anchored to the ~2% uncertainty scale discussed in IEA PVPS Task 13."
++            )
++        with g3:
++            project_segment = st.selectbox(
++                "Project segment", ["utility", "commercial", "residential", "research"], index=0,
++                help="Prevents apples-to-oranges comparisons. Research mode disables segment filtering but also weakens commercial claims."
++            )
++
+     st.markdown('<div class="section-label" style="margin-top:1rem">2 · Project location</div>', unsafe_allow_html=True)
+     lat = float(st.session_state.selected_lat)
+     lon = float(st.session_state.selected_lon)
+@@ -125,7 +144,7 @@
+     with info_col:
+         st.markdown(f'<div class="location-chip">📍 {lat:.5f}, {lon:.5f}</div>', unsafe_allow_html=True)
+         st.write("**Frozen PoC geometry**")
+-        st.write("• Utility-scale")
++        st.write(f"• Project segment: {project_segment}")
+         st.write("• Fixed tilt")
+         st.write("• Monofacial")
+         st.write(f"• Equator-facing azimuth: {azimuth_deg:.0f}°")
+@@ -145,7 +164,17 @@
+             st.stop()
+     else:
+         candidates = seed.copy()
+-        st.caption("Using the four manufacturer-datasheet seed records. Their prices are intentionally blank.")
++        st.caption("Using manufacturer-datasheet seed records. Their prices are intentionally blank and their model-evidence limitations are explicit.")
++
++    if project_segment != "research":
++        mask = candidates.apply(lambda r: project_segment_compatible(r, project_segment), axis=1)
++        excluded = candidates.loc[~mask, ["manufacturer", "model"]]
++        candidates = candidates.loc[mask].reset_index(drop=True)
++        if not excluded.empty:
++            st.caption("Excluded as incompatible with the selected project segment: " + "; ".join(excluded["manufacturer"].astype(str)+" "+excluded["model"].astype(str)))
++    if len(candidates) < 2:
++        st.error("Fewer than two segment-compatible candidates remain. Upload comparable offers or use research mode explicitly.")
++        st.stop()
+ 
+     st.download_button(
+         "Download EPC module-offer template",
+@@ -186,7 +215,7 @@
+         "manufacturer", "model", "technology_label", "pmax_w", "vmp_v", "imp_a",
+         "voc_v", "isc_a", "gamma_pmax_pct_c", "module_efficiency_pct",
+         "first_year_retention_pct", "annual_warranty_degradation_pct_year",
+-        "evidence_status",
++        "evidence_status", "project_segment", "spectral_evidence_level", "iec61853_matrix_file",
+     ]
+     st.dataframe(selected[show_cols], hide_index=True, use_container_width=True)
+ 
+@@ -226,7 +255,7 @@
+     for i, (_, row) in enumerate(selected.iterrows(), start=1):
+         try:
+             summary, hourly = simulate_module_hourly(
+-                weather, row, common_soiling_loss_pct=soiling_loss_pct
++                weather, row, common_soiling_loss_pct=soiling_loss_pct, root=root
+             )
+             summaries.append(summary)
+             hourly_frames.append(hourly)
+@@ -249,17 +278,21 @@
+         )
+         st.stop()
+ 
+-    results = add_lifetime_metrics(pd.DataFrame(summaries), selected, years=25)
++    results = add_lifetime_metrics(
++        pd.DataFrame(summaries), selected, years=25, common_degradation_pct_year=common_degradation
++    )
+     # Project-scale DC energy is derived transparently from specific energy.
+     # kWh/kWp × MWp is numerically MWh. No AC/inverter losses are implied.
+     results["annual_project_dc_energy_mwh"] = (
+         results["annual_dc_specific_energy_kwh_kwp"] * float(system_size_mw)
+     )
+     results["lifetime_project_dc_energy_mwh"] = (
+-        results["lifetime_energy_warranty_scenario_kwh_kwp"] * float(system_size_mw)
++        results["lifetime_energy_common_degradation_scenario_kwh_kwp"] * float(system_size_mw)
+     )
+     stress_df = pd.DataFrame(stress_rows)
+-    decision = epc_energy_decision(results, minimum_separation_pct=min_sep)
++    decision = epc_energy_decision(
++        results, minimum_separation_pct=min_sep, uncertainty_guardrail_pct=uncertainty_guardrail
++    )
+ 
+     pvgis_note = "PVGIS cross-check disabled."
+     pvgis_delta = np.nan
+@@ -285,7 +318,7 @@
+             energy_value_usd_kwh=energy_value,
+             discount_rate_pct=discount_rate,
+             area_bos_usd_m2=area_bos_cost,
+-            years=25,
++            years=25, common_degradation_pct_year=common_degradation,
+         )
+     except Exception as exc:
+         switching_error = str(exc)
+@@ -293,22 +326,28 @@
+         switching_error = None
+ 
+     st.markdown("---")
++    if not decision["evidence_complete_for_all_selected_candidates"]:
++        st.error(
++            "Cross-technology decision blocked because these candidates lack decision-grade model evidence: "
++            + ", ".join(decision["decision_ineligible_module_ids"])
++            + ". They remain visible for research sensitivity only."
++        )
+     if decision["winner_module_id"] is None:
+         st.warning("### No robust winner under the declared scenarios\n\n" + decision["headline"])
+     else:
+         winner_row = results.set_index("module_id").loc[decision["winner_module_id"]]
+         st.success(
+-            "### Stable energy leader under the declared scenarios\n\n"
++            "### Stable physics leader above the uncertainty guardrail\n\n"
+             + decision["headline"]
+-            + "\n\nThis is scenario stability, **not a probabilistic confidence claim**."
++            + "\n\nThis is an evidence/uncertainty guardrail result, **not a probabilistic confidence or bankability claim**."
+         )
+ 
+     k1, k2, k3, k4 = st.columns(4)
+-    lifetime_leader = results.sort_values("lifetime_energy_warranty_scenario_kwh_kwp", ascending=False).iloc[0]
++    lifetime_leader = results.sort_values("lifetime_energy_common_degradation_scenario_kwh_kwp", ascending=False).iloc[0]
+     annual_leader = results.sort_values("annual_yield_kwh_kwp", ascending=False).iloc[0]
+-    k1.metric("Spectral-adjusted annual leader", f"{annual_leader['manufacturer']} {annual_leader['model']}")
+-    k2.metric("Warranty-scenario leader", f"{lifetime_leader['manufacturer']} {lifetime_leader['model']}")
+-    k3.metric("Broadband / spectral lead", f"{decision['broadband_lead_over_second_pct']:.2f}% / {decision['annual_lead_over_second_pct']:.2f}%")
++    k1.metric("Primary annual physics leader", f"{annual_leader['manufacturer']} {annual_leader['model']}")
++    k2.metric("Common-degradation lifetime leader", f"{lifetime_leader['manufacturer']} {lifetime_leader['model']}")
++    k3.metric("Annual leader gap / guardrail", f"{decision['annual_lead_over_second_pct']:.2f}% / {decision['required_decision_gap_pct']:.2f}%")
+     k4.metric("Lifetime lead", f"{decision['lifetime_lead_over_second_pct']:.2f}%")
+ 
+     comparison = results[[
+@@ -316,10 +355,10 @@
+         "annual_dc_specific_energy_kwh_kwp", "annual_dc_specific_energy_no_spectral_kwh_kwp",
+         "annual_project_dc_energy_mwh", "iam_effect_pct", "spectral_effect_pct",
+         "avg_cell_temperature_c_daylight", "p95_cell_temperature_c_daylight",
+-        "lifetime_energy_warranty_scenario_kwh_kwp", "lifetime_project_dc_energy_mwh",
+-        "year_25_warranty_end_retention_pct",
+-        "cec_fit_status", "thermal_model",
+-    ]].sort_values("lifetime_energy_warranty_scenario_kwh_kwp", ascending=False)
++        "lifetime_energy_common_degradation_scenario_kwh_kwp", "lifetime_energy_warranty_scenario_kwh_kwp",
++        "lifetime_project_dc_energy_mwh", "year_25_common_scenario_end_retention_pct", "year_25_warranty_end_retention_pct",
++        "electrical_model", "decision_eligible", "model_evidence_level", "spectral_policy", "thermal_model", "thermal_evidence_level",
++    ]].sort_values("lifetime_energy_common_degradation_scenario_kwh_kwp", ascending=False)
+     st.markdown("### Physics comparison")
+     st.dataframe(comparison, hide_index=True, use_container_width=True)
+ 
+@@ -347,7 +386,9 @@
+                 "npv_energy_value_usd_per_w", "area_bos_proxy_usd_per_w",
+                 "allowable_module_price_premium_vs_baseline_usd_w",
+                 "indifference_module_price_usd_w",
++                "indifference_module_price_warranty_sensitivity_usd_w",
+                 "economically_preferred_vs_baseline_at_quote",
++                "economic_decision_eligible", "economic_evidence_note",
+             ]],
+             hide_index=True, use_container_width=True
+         )
+@@ -380,6 +421,9 @@
+             "tilt_deg": tilt_deg,
+             "azimuth_deg": azimuth_deg,
+             "soiling_loss_pct": soiling_loss_pct,
++            "common_degradation_pct_year": common_degradation,
++            "uncertainty_guardrail_pct": uncertainty_guardrail,
++            "project_segment": project_segment,
+         },
+         results=results,
+         decision=decision,
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/app/streamlit_app.py solaryn_v9_work/app/streamlit_app.py
+--- v8_2_baseline/app/streamlit_app.py	2026-08-18 09:07:26.000000000 +0000
++++ solaryn_v9_work/app/streamlit_app.py	2026-08-19 13:49:08.858915318 +0000
+@@ -30,7 +30,7 @@
+ from app.epc_module_mode import render_epc_module_mode
+ 
+ st.set_page_config(
+-    page_title="Solaryn V8.2 Science Corrected",
++    page_title="Solaryn V9 Bias Corrected",
+     page_icon="☀️",
+     layout="wide",
+     initial_sidebar_state="collapsed",
+@@ -76,7 +76,7 @@
+     horizontal=True,
+     help=(
+         "Technology screening preserves the full 30-technology/material Solaryn database. "
+-        "EPC module comparison uses actual commercial-module datasheets and a CEC single-diode model."
++        "EPC module comparison uses an evidence hierarchy: module-specific IEC 61853 G-T data when available, otherwise a transparent crystalline-silicon single-diode fallback. Non-c-Si candidates without validated model evidence cannot determine a robust winner."
+     ),
+ )
+ if mode == "EPC module comparison":
+@@ -84,9 +84,8 @@
+     st.stop()
+ 
+ st.warning(
+-    "Research screening mode preserves Solaryn's full 30-technology/material database, "
+-    "but it is not the EPC procurement decision path. Use EPC module comparison for a "
+-    "commercial recommendation based on actual module datasheets."
++    "Research screening preserves Solaryn's full technology/material knowledge base, but its legacy weighted ranking is heuristic. "
++    "Treat results as research hypotheses and diagnostics only—not as a procurement winner. Use EPC module comparison for the bias-controlled decision path."
+ )
+ 
+ 
+@@ -137,12 +136,10 @@
+ st.markdown(
+     """
+     <div class="solaryn-hero">
+-      <div class="solaryn-eyebrow">V8.2 · Technology screening · original Solaryn database</div>
++      <div class="solaryn-eyebrow">V9 · Research screening · heuristic results isolated from decisions</div>
+       <div class="solaryn-title">SOLARYN</div>
+       <div class="solaryn-subtitle">
+-        The original Solaryn concept and database are preserved. The original Solaryn database and material/device vision are preserved. In screening mode, hourly NASA POWER + pvlib
+-        drives site physics; technology temperature and supported spectral response affect energy; site soiling is common across technologies;
+-        degradation remains a scenario; material/device parameters remain visible for research intelligence without secretly forcing the commercial winner.
++        The original Solaryn technology/material database and material/device vision are preserved, but this page is explicitly a research-screening workspace. Its weighted rankings are not decision-grade. Climate physics and material descriptors may generate hypotheses; they cannot override the module-level evidence hierarchy used by the commercial decision path.
+       </div>
+     </div>
+     """,
+@@ -486,7 +483,7 @@
+ - **Lifetime:** database degradation is a scenario, not a climate-calibrated prediction.
+ - **Diagnostics only:** mobility, defect density, absorber thickness, physics-quality score, heat/humidity/soiling resilience scores and generic confidence values do not force the commercial winner.
+ 
+-### What V8.1 now proves
++### What V9 now enforces
+ 
+ - A **commercial procurement universe** is separated from research exploration.
+ - The user explicitly defines what **best** means through the project objective.
+@@ -502,7 +499,7 @@
+ - Technology/material data provenance is not yet complete.
+ - Degradation activation energies and humidity parameters are PoC proxies requiring evidence and calibration.
+ - Bifacial rear-side irradiance/gain is not yet modelled, so bifacial variants are excluded from the default commercial ranking.
+-- The research screening path still uses compact technology-class performance models; the separate EPC module mode now uses actual datasheet-fitted CEC single-diode I–V modeling and a first-order technology-class spectral modifier.
++- The research screening path remains heuristic and cannot issue a commercial winner. The EPC path uses module-specific IEC 61853 G-T evidence when available; c-Si may fall back to a datasheet-fitted CEC single-diode model under an uncertainty guardrail; non-c-Si candidates without validated model evidence are decision-ineligible.
+ - Material/device architecture is not yet the primary decision layer.
+ - P50/P90 uncertainty propagation is not yet implemented.
+ 
+@@ -512,7 +509,7 @@
+         """
+     )
+     st.json({
+-        "version": "V8.2 DB + IV EPC Science",
++        "version": "V9 Bias Corrected · IEC-61853 evidence hierarchy",
+         "coordinates": {"latitude": lat, "longitude": lon},
+         "analysis_period": {"start": str(start), "end": str(end), "days": analysis_days},
+         "system_size_mw": system_size,
+@@ -522,6 +519,6 @@
+         "candidate_scope": candidate_scope,
+         "active_candidate_count": len(candidate_tech),
+         "primary_climate_source": "NASA POWER hourly",
+-        "physics_engine": "screening: pvlib POA + compact tech model; EPC mode: datasheet CEC single-diode",
++        "physics_engine": "research screening: heuristic/diagnostic only; EPC mode: module-specific IEC 61853 matrix preferred, c-Si CEC fallback, non-c-Si fails closed without validated evidence",
+         "pvgis_crosscheck": bool(use_pvgis),
+     })
+diff -ruN '--exclude=__pycache__' '--exclude=.pytest_cache' v8_2_baseline/tests/test_bias_correction_v9.py solaryn_v9_work/tests/test_bias_correction_v9.py
+--- v8_2_baseline/tests/test_bias_correction_v9.py	1970-01-01 00:00:00.000000000 +0000
++++ solaryn_v9_work/tests/test_bias_correction_v9.py	2026-08-19 14:06:05.994779058 +0000
+@@ -0,0 +1,355 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import numpy as np
++import pandas as pd
++import pytest
++
++from src.evidence_policy import (
++    electrical_model_policy,
++    spectral_evidence_policy,
++    project_segment_compatible,
++)
++from src.iec61853_engine import (
++    validate_iec61853_matrix,
++    interpolate_iec61853_pmax,
++)
++from src.lifetime_engine import add_lifetime_metrics
++from src.economics_engine import switching_point_table
++from src.epc_decision import epc_energy_decision
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def _synthetic_matrix(kind: str) -> pd.DataFrame:
++    """Synthetic software fixture only; not measured PV validation data.
++
++    A is deliberately stronger at low irradiance and more temperature-sensitive.
++    B is deliberately weaker at low irradiance and less temperature-sensitive.
++    Both are normalized to the same 500 W STC Pmax.
++    """
++    rows = []
++    for g in [100, 200, 400, 600, 800, 1000, 1100]:
++        for t in [15, 25, 50, 75]:
++            x = g / 1000.0
++            if kind == "A":
++                low_light = 1.0 + 0.045 * (1.0 - min(x, 1.0))
++                thermal = 1.0 - 0.0040 * (t - 25.0)
++            elif kind == "B":
++                low_light = 1.0 - 0.055 * (1.0 - min(x, 1.0))
++                thermal = 1.0 - 0.0024 * (t - 25.0)
++            else:
++                raise ValueError(kind)
++            # Keep exact shared STC anchor.
++            p = 500.0 * x * low_light * thermal
++            if g == 1000 and t == 25:
++                p = 500.0
++            rows.append({
++                "irradiance_w_m2": float(g),
++                "module_temperature_c": float(t),
++                "pmax_w": max(0.0, p),
++            })
++    return pd.DataFrame(rows)
++
++
++def _module_row(celltype: str = "monoSi") -> pd.Series:
++    return pd.Series({
++        "module_id": "M",
++        "cec_celltype": celltype,
++        "pmax_w": 500.0,
++        "project_segment": "all",
++        "spectral_evidence_level": "technology_class_proxy",
++        "iec61853_matrix_file": "",
++    })
++
++
++def test_iec61853_matrix_validates_span_and_stc_anchor():
++    matrix = _synthetic_matrix("A")
++    val = validate_iec61853_matrix(matrix, module_pmax_w=500.0)
++    assert val.measured_points == 28
++    assert val.has_stc_anchor
++    assert val.stc_relative_error_pct == pytest.approx(0.0)
++    assert val.irradiance_min_w_m2 == 100.0
++    assert val.irradiance_max_w_m2 == 1100.0
++    assert val.temperature_min_c == 15.0
++    assert val.temperature_max_c == 75.0
++
++
++def test_iec61853_matrix_rejects_duplicate_and_bad_stc_anchor():
++    matrix = _synthetic_matrix("A")
++    duplicate = pd.concat([matrix, matrix.iloc[[0]]], ignore_index=True)
++    with pytest.raises(ValueError, match="duplicate"):
++        validate_iec61853_matrix(duplicate, module_pmax_w=500.0)
++
++    bad = matrix.copy()
++    bad.loc[(bad.irradiance_w_m2 == 1000) & (bad.module_temperature_c == 25), "pmax_w"] = 450.0
++    with pytest.raises(ValueError, match="differs from module nameplate"):
++        validate_iec61853_matrix(bad, module_pmax_w=500.0)
++
++
++def test_matrix_interpolation_reproduces_measured_anchor_points():
++    matrix = _synthetic_matrix("A")
++    sample = matrix.sample(10, random_state=7).reset_index(drop=True)
++    p, diagnostics = interpolate_iec61853_pmax(
++        matrix, sample["irradiance_w_m2"], sample["module_temperature_c"]
++    )
++    assert np.allclose(p.to_numpy(), sample["pmax_w"].to_numpy(), rtol=1e-10, atol=1e-8)
++    assert diagnostics["matrix_irradiance_extrapolation_fraction_pct"] == pytest.approx(0.0)
++    assert diagnostics["matrix_temperature_extrapolation_fraction_pct"] == pytest.approx(0.0)
++
++
++def test_bias_corrected_physics_surface_can_flip_leader_between_climates_without_weights():
++    a = _synthetic_matrix("A")
++    b = _synthetic_matrix("B")
++
++    # Synthetic cool/diffuse-like operating distribution (software behavior test only).
++    g_cool = pd.Series([200, 300, 400, 500, 600] * 100, dtype=float)
++    t_cool = pd.Series([15, 18, 20, 23, 25] * 100, dtype=float)
++    pa_cool, _ = interpolate_iec61853_pmax(a, g_cool, t_cool)
++    pb_cool, _ = interpolate_iec61853_pmax(b, g_cool, t_cool)
++
++    # Synthetic hot/arid-like operating distribution.
++    g_hot = pd.Series([800, 900, 1000, 1050, 1100] * 100, dtype=float)
++    t_hot = pd.Series([50, 55, 60, 65, 70] * 100, dtype=float)
++    pa_hot, _ = interpolate_iec61853_pmax(a, g_hot, t_hot)
++    pb_hot, _ = interpolate_iec61853_pmax(b, g_hot, t_hot)
++
++    assert pa_cool.sum() > pb_cool.sum(), "Module A should lead in the synthetic cool/low-G distribution."
++    assert pb_hot.sum() > pa_hot.sum(), "Module B should lead in the synthetic hot/high-G distribution."
++
++
++def test_electrical_model_policy_fails_closed_for_non_csi_without_matrix(tmp_path):
++    csi = _module_row("monoSi")
++    csi_policy = electrical_model_policy(csi, tmp_path)
++    assert csi_policy["decision_eligible"] is True
++    assert csi_policy["electrical_model"] == "cec_single_diode_datasheet_fit"
++
++    cdte = _module_row("cdte")
++    cdte_policy = electrical_model_policy(cdte, tmp_path)
++    assert cdte_policy["decision_eligible"] is False
++    assert cdte_policy["electrical_model"] == "cec_single_diode_exploratory_only"
++
++
++def test_module_specific_matrix_overrides_generic_model_class(tmp_path):
++    matrix_path = tmp_path / "module_matrix.csv"
++    _synthetic_matrix("B").to_csv(matrix_path, index=False)
++    cdte = _module_row("cdte")
++    cdte["iec61853_matrix_file"] = matrix_path.name
++    policy = electrical_model_policy(cdte, tmp_path)
++    assert policy["decision_eligible"] is True
++    assert policy["electrical_model"] == "iec61853_module_specific_matrix"
++    assert policy["model_evidence_level"] == "module_specific_measured_matrix"
++
++
++def test_technology_class_spectral_proxy_is_sensitivity_only():
++    row = _module_row("monoSi")
++    policy = spectral_evidence_policy(row)
++    assert policy["spectral_decision_eligible"] is False
++    assert policy["spectral_policy"] == "technology_class_proxy_is_sensitivity_only"
++
++
++def test_declaring_eqe_alone_does_not_enable_spectral_decision_without_time_resolved_spectral_engine():
++    row = _module_row("monoSi")
++    row["spectral_evidence_level"] = "module_specific_eqe"
++    policy = spectral_evidence_policy(row)
++    assert policy["spectral_decision_eligible"] is False
++    assert "not_yet_implemented" in policy["spectral_policy"]
++
++
++def test_common_degradation_primary_preserves_annual_ranking_while_warranty_is_separate_sensitivity():
++    results = pd.DataFrame([
++        {"module_id": "A", "annual_yield_kwh_kwp": 1800.0},
++        {"module_id": "B", "annual_yield_kwh_kwp": 1780.0},
++    ])
++    modules = pd.DataFrame([
++        {"module_id": "A", "first_year_retention_pct": 97.0, "annual_warranty_degradation_pct_year": 0.70},
++        {"module_id": "B", "first_year_retention_pct": 100.0, "annual_warranty_degradation_pct_year": 0.05},
++    ])
++    out = add_lifetime_metrics(results, modules, years=25, common_degradation_pct_year=0.50)
++    annual_leader = out.sort_values("annual_yield_kwh_kwp", ascending=False).iloc[0]["module_id"]
++    common_leader = out.sort_values("lifetime_energy_common_degradation_scenario_kwh_kwp", ascending=False).iloc[0]["module_id"]
++    warranty_leader = out.sort_values("lifetime_energy_warranty_scenario_kwh_kwp", ascending=False).iloc[0]["module_id"]
++    assert annual_leader == "A"
++    assert common_leader == "A"
++    assert warranty_leader == "B"
++
++
++def test_uncertainty_guardrail_blocks_small_numeric_advantage():
++    df = pd.DataFrame([
++        {
++            "module_id": "A", "manufacturer": "A", "model": "A1", "decision_eligible": True,
++            "annual_yield_kwh_kwp": 1818.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1818.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 43000.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 43000.0,
++        },
++        {
++            "module_id": "B", "manufacturer": "B", "model": "B1", "decision_eligible": True,
++            "annual_yield_kwh_kwp": 1800.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1800.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 42575.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 42575.0,
++        },
++    ])
++    d = epc_energy_decision(df, minimum_separation_pct=0.5, uncertainty_guardrail_pct=2.0)
++    assert d["winner_module_id"] is None
++    assert d["status"] == "no_robust_winner_under_uncertainty_guardrail"
++    assert d["required_decision_gap_pct"] == pytest.approx(2.0)
++
++
++def test_decision_blocks_cross_technology_winner_when_model_evidence_incomplete():
++    df = pd.DataFrame([
++        {
++            "module_id": "CSI", "manufacturer": "C", "model": "C1", "decision_eligible": True,
++            "annual_yield_kwh_kwp": 1900.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1900.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 45000.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 45000.0,
++        },
++        {
++            "module_id": "CDTE", "manufacturer": "D", "model": "D1", "decision_eligible": False,
++            "annual_yield_kwh_kwp": 1800.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1800.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 42000.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 42000.0,
++        },
++    ])
++    d = epc_energy_decision(df, uncertainty_guardrail_pct=2.0)
++    assert d["winner_module_id"] is None
++    assert d["status"] == "incomplete_cross_technology_model_evidence"
++    assert d["decision_ineligible_module_ids"] == ["CDTE"]
++
++
++def test_spectral_proxy_flip_is_reported_but_does_not_create_primary_winner():
++    df = pd.DataFrame([
++        {
++            "module_id": "A", "manufacturer": "A", "model": "A1", "decision_eligible": True,
++            "annual_yield_kwh_kwp": 1900.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1900.0,
++            "annual_dc_specific_energy_spectral_sensitivity_kwh_kwp": 1850.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 45000.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 45000.0,
++        },
++        {
++            "module_id": "B", "manufacturer": "B", "model": "B1", "decision_eligible": True,
++            "annual_yield_kwh_kwp": 1820.0,
++            "annual_dc_specific_energy_broadband_kwh_kwp": 1820.0,
++            "annual_dc_specific_energy_spectral_sensitivity_kwh_kwp": 1920.0,
++            "lifetime_energy_common_degradation_scenario_kwh_kwp": 43000.0,
++            "lifetime_energy_warranty_scenario_kwh_kwp": 43000.0,
++        },
++    ])
++    d = epc_energy_decision(df, uncertainty_guardrail_pct=2.0)
++    assert d["winner_module_id"] == "A"
++    assert d["spectral_sensitivity_changes_leader"] is True
++    assert d["spectral_sensitivity_leader_module_id"] == "B"
++
++
++def test_switching_point_primary_uses_common_degradation_not_warranty_to_manufacture_premium():
++    modules = pd.DataFrame([
++        {
++            "module_id": "BASE", "manufacturer": "Base", "model": "B", "module_area_m2": 2.5, "pmax_w": 500.0,
++            "first_year_retention_pct": 97.0, "annual_warranty_degradation_pct_year": 0.9, "quote_usd_w": 0.20,
++        },
++        {
++            "module_id": "ALT", "manufacturer": "Alt", "model": "A", "module_area_m2": 2.5, "pmax_w": 500.0,
++            "first_year_retention_pct": 100.0, "annual_warranty_degradation_pct_year": 0.05, "quote_usd_w": 0.20,
++        },
++    ])
++    results = pd.DataFrame([
++        {"module_id": "BASE", "annual_yield_kwh_kwp": 1800.0},
++        {"module_id": "ALT", "annual_yield_kwh_kwp": 1800.0},
++    ])
++    out = switching_point_table(
++        results, modules, "BASE", energy_value_usd_kwh=0.05,
++        discount_rate_pct=7.0, area_bos_usd_m2=0.0, years=25,
++        common_degradation_pct_year=0.5,
++    ).set_index("module_id")
++    # Equal year-1 energy + equal common degradation + equal area => no primary premium.
++    assert out.loc["ALT", "allowable_module_price_premium_vs_baseline_usd_w"] == pytest.approx(0.0)
++    # Warranty sensitivity can differ, but it is explicitly separated from the primary threshold.
++    assert out.loc["ALT", "indifference_module_price_warranty_sensitivity_usd_w"] != pytest.approx(0.20)
++
++
++def test_project_segment_prevents_residential_seed_from_utility_comparison():
++    modules = pd.read_csv(ROOT / "data/raw/module_candidate_master.csv")
++    rec = modules.loc[modules["manufacturer"].eq("REC")].iloc[0]
++    first_solar = modules.loc[modules["manufacturer"].eq("First Solar")].iloc[0]
++    assert project_segment_compatible(rec, "utility") is False
++    assert project_segment_compatible(rec, "residential") is True
++    assert project_segment_compatible(first_solar, "utility") is True
++    assert project_segment_compatible(first_solar, "residential") is False
++
++
++def test_epc_production_path_does_not_import_legacy_recommendation_engine():
++    source = (ROOT / "app/epc_module_mode.py").read_text()
++    assert "recommendation_engine" not in source
++    assert "rank_technologies" not in source
++
++
++def test_legacy_resilience_scores_do_not_enter_epc_decision_source():
++    source = "\n".join(
++        (ROOT / rel).read_text()
++        for rel in [
++            "src/module_iv_engine.py",
++            "src/epc_decision.py",
++            "src/economics_engine.py",
++            "app/epc_module_mode.py",
++        ]
++    )
++    forbidden = [
++        "heat_resilience_score",
++        "humidity_resilience_score",
++        "soiling_resilience_score",
++        "low_light_score",
++        "physics_quality_score",
++        "project_fit_score",
++    ]
++    for term in forbidden:
++        assert term not in source
++
++
++def test_switching_economics_cannot_revive_decision_ineligible_candidate():
++    modules = pd.DataFrame([
++        {"module_id":"BASE","manufacturer":"Base","model":"B","module_area_m2":2.5,"pmax_w":500.0,"first_year_retention_pct":98.0,"annual_warranty_degradation_pct_year":0.5,"quote_usd_w":0.20},
++        {"module_id":"X","manufacturer":"X","model":"X1","module_area_m2":2.4,"pmax_w":500.0,"first_year_retention_pct":99.0,"annual_warranty_degradation_pct_year":0.3,"quote_usd_w":0.10},
++    ])
++    results = pd.DataFrame([
++        {"module_id":"BASE","annual_yield_kwh_kwp":1800.0,"decision_eligible":True},
++        {"module_id":"X","annual_yield_kwh_kwp":2200.0,"decision_eligible":False},
++    ])
++    out = switching_point_table(results, modules, "BASE", 0.05, 7.0, 20.0).set_index("module_id")
++    assert out.loc["X", "economic_decision_eligible"] == False
++    assert pd.isna(out.loc["X", "indifference_module_price_usd_w"])
++    assert out.loc["X", "economic_evidence_note"] == "blocked_incomplete_energy_model_evidence"
++
++
++def test_nasa_surface_pressure_unit_guard_handles_kpa_and_hpa(monkeypatch):
++    import importlib
++    import sys
++    import types
++    # pvlib_pipeline imports pvlib at module import time. A minimal stub is enough to
++    # exercise the pure unit-conversion helper in this dependency-limited test env.
++    monkeypatch.setitem(sys.modules, "pvlib", types.SimpleNamespace())
++    sys.modules.pop("src.pvlib_pipeline", None)
++    mod = importlib.import_module("src.pvlib_pipeline")
++    pa, note = mod._pressure_to_pa(pd.Series([101.3, 100.8]))
++    assert pa.iloc[0] == pytest.approx(101300.0)
++    assert "kPa" in note
++    pa2, note2 = mod._pressure_to_pa(pd.Series([1013.0, 1008.0]))
++    assert pa2.iloc[0] == pytest.approx(101300.0)
++    assert "hPa" in note2
++
++
++def test_parameter_audit_covers_every_module_candidate_field():
++    """Every field accepted by the commercial module master must be explicitly classified.
++
++    This prevents new columns from silently becoming decision-driving parameters without an
++    evidence/use policy review.
++    """
++    root = Path(__file__).resolve().parents[1]
++    modules = pd.read_csv(root / "data" / "raw" / "module_candidate_master.csv")
++    audit = pd.read_csv(root / "docs" / "PARAMETER_AUDIT_V9.csv")
++    audited = set(audit["parameter"].astype(str))
++    assert set(modules.columns).issubset(audited)
+diff -ruN v8_2_baseline/data/raw/epc_module_offer_template.csv solaryn_v9_work/data/raw/epc_module_offer_template.csv
+--- v8_2_baseline/data/raw/epc_module_offer_template.csv	2026-08-18 09:01:34.000000000 +0000
++++ solaryn_v9_work/data/raw/epc_module_offer_template.csv	2026-08-19 13:58:10.837688375 +0000
+@@ -1 +1 @@
+-module_id,technology_id,manufacturer,model,technology_label,cec_celltype,pmax_w,vmp_v,imp_a,voc_v,isc_a,alpha_isc_pct_c,beta_voc_pct_c,gamma_pmax_pct_c,cells_in_series,cells_in_series_basis,module_area_m2,module_efficiency_pct,noct_c,thermal_construction,first_year_retention_pct,annual_warranty_degradation_pct_year,warranty_years,quote_usd_w,source_url,evidence_status,source_note
++module_id,technology_id,manufacturer,model,technology_label,cec_celltype,pmax_w,vmp_v,imp_a,voc_v,isc_a,alpha_isc_pct_c,beta_voc_pct_c,gamma_pmax_pct_c,cells_in_series,cells_in_series_basis,module_area_m2,module_efficiency_pct,noct_c,thermal_construction,first_year_retention_pct,annual_warranty_degradation_pct_year,warranty_years,quote_usd_w,source_url,evidence_status,source_note,iec61853_matrix_file,spectral_evidence_level,thermal_u0_w_m2k,thermal_u1_w_s_m3k,bom_evidence_status,project_segment,spectral_response_file,spectral_irradiance_source,iam_curve_file,thermal_evidence_source,electrical_model_validation_reference,bom_source_reference
+diff -ruN v8_2_baseline/data/raw/iec61853_matrix_template.csv solaryn_v9_work/data/raw/iec61853_matrix_template.csv
+--- v8_2_baseline/data/raw/iec61853_matrix_template.csv	1970-01-01 00:00:00.000000000 +0000
++++ solaryn_v9_work/data/raw/iec61853_matrix_template.csv	2026-08-19 13:45:16.322779058 +0000
+@@ -0,0 +1,23 @@
++irradiance_w_m2,module_temperature_c,pmax_w,measurement_uncertainty_pct,source_reference
++100,15,,,
++100,25,,,
++200,15,,,
++200,25,,,
++400,15,,,
++400,25,,,
++400,50,,,
++600,15,,,
++600,25,,,
++600,50,,,
++600,75,,,
++800,15,,,
++800,25,,,
++800,50,,,
++800,75,,,
++1000,15,,,
++1000,25,,,
++1000,50,,,
++1000,75,,,
++1100,25,,,
++1100,50,,,
++1100,75,,,
+diff -ruN v8_2_baseline/data/raw/module_candidate_master.csv solaryn_v9_work/data/raw/module_candidate_master.csv
+--- v8_2_baseline/data/raw/module_candidate_master.csv	2026-08-18 08:57:24.000000000 +0000
++++ solaryn_v9_work/data/raw/module_candidate_master.csv	2026-08-19 13:58:10.830779058 +0000
+@@ -1,5 +1,5 @@
+-module_id,technology_id,manufacturer,model,technology_label,cec_celltype,pmax_w,vmp_v,imp_a,voc_v,isc_a,alpha_isc_pct_c,beta_voc_pct_c,gamma_pmax_pct_c,cells_in_series,cells_in_series_basis,module_area_m2,module_efficiency_pct,noct_c,thermal_construction,first_year_retention_pct,annual_warranty_degradation_pct_year,warranty_years,quote_usd_w,source_url,evidence_status,source_note
+-MOD_PERC_LONGI_LR5_72HPH_550M,TECH_01,LONGi,LR5-72HPH-550M,Mono PERC,monoSi,550.0,41.95,13.12,49.8,13.98,0.05,-0.265,-0.34,72,144 half-cells; 72-series electrical topology inferred for SDM,2.583252,21.3,45.0,glass_polymer_open_rack,98.0,0.55,25,,https://static.longi.com/L_Gi_LE_PM_T_PMD_059_F119_LR_5_72_HPH_540_560_M_35_35_and_15_G2_V15_CHT_9ec1618dcc.pdf,manufacturer_datasheet,550 W STC row; datasheet states first-year degradation <2% and years 2-25 0.55%/yr. Quote intentionally blank.
+-MOD_TOPCON_JINKO_JKM575N_72HL4_V,TECH_02,JinkoSolar,JKM575N-72HL4-V,TOPCon,monoSi,575.0,42.22,13.62,50.88,14.39,0.046,-0.25,-0.3,72,144 half-cells; 72-series electrical topology inferred for SDM,2.583252,22.3,45.0,glass_polymer_open_rack,99.0,0.4,30,,https://www.jinkosolar.com/uploads/JKM555-575N-72HL4-%28V%29-F1-EN%20%28IEC%202016%29.pdf,manufacturer_datasheet,575 W STC row. Datasheet/warranty family states 1% first-year and 0.40%/yr thereafter. Quote intentionally blank.
+-MOD_HJT_REC_ALPHA_PURE_RX_470,TECH_03,REC,Alpha Pure-RX 470,HJT,monoSi,470.0,55.4,8.49,65.7,8.95,0.04,-0.24,-0.24,88,datasheet lists 88 half-cut HJT cells; electrical voltage supports 88-series SDM interpretation,2.08,22.6,44.0,glass_polymer_open_rack,98.0,0.25,25,,https://www.recgroup.com/sites/default/files/2025-11/DS_Alpha_Pure-RX_IEC_EN_AUCEC_101125.pdf,manufacturer_datasheet,470 W STC row; 98% Year 1 and 0.25% annual degradation warranty. Quote intentionally blank.
+-MOD_CDTE_FIRST_SOLAR_SERIES7_TR1_530,TECH_06,First Solar,Series 7 TR1 530,CdTe Thin Film,cdte,530.0,186.9,2.84,226.7,3.05,0.04,-0.28,-0.32,268,"datasheet states CdTe thin-film semiconductor, up to 268 cells; seeded as 268 for this model record and must be verified before bankability use",2.8,19.0,45.0,glass_glass_open_rack,98.0,0.3,30,,https://www.firstsolar.com/-/media/First-Solar/Technical-Documents/Series-7/Series-7-TR1-Datasheet.ashx,manufacturer_datasheet,530 W STC row; datasheet states 0.30%/yr warranted degradation and >89% after 30 years. Quote intentionally blank.
++module_id,technology_id,manufacturer,model,technology_label,cec_celltype,pmax_w,vmp_v,imp_a,voc_v,isc_a,alpha_isc_pct_c,beta_voc_pct_c,gamma_pmax_pct_c,cells_in_series,cells_in_series_basis,module_area_m2,module_efficiency_pct,noct_c,thermal_construction,first_year_retention_pct,annual_warranty_degradation_pct_year,warranty_years,quote_usd_w,source_url,evidence_status,source_note,iec61853_matrix_file,spectral_evidence_level,thermal_u0_w_m2k,thermal_u1_w_s_m3k,bom_evidence_status,project_segment,spectral_response_file,spectral_irradiance_source,iam_curve_file,thermal_evidence_source,electrical_model_validation_reference,bom_source_reference
++MOD_PERC_LONGI_LR5_72HPH_550M,TECH_01,LONGi,LR5-72HPH-550M,Mono PERC,monoSi,550.0,41.95,13.12,49.8,13.98,0.05,-0.265,-0.34,72,144 half-cells; 72-series electrical topology inferred for SDM,2.583252,21.3,45.0,glass_polymer_open_rack,98.0,0.55,25,,https://static.longi.com/L_Gi_LE_PM_T_PMD_059_F119_LR_5_72_HPH_540_560_M_35_35_and_15_G2_V15_CHT_9ec1618dcc.pdf,manufacturer_datasheet,550 W STC row; datasheet states first-year degradation <2% and years 2-25 0.55%/yr. Quote intentionally blank.,,technology_class_proxy,,,not_used_in_decision_unless_calibrated,all,,,,,,
++MOD_TOPCON_JINKO_JKM575N_72HL4_V,TECH_02,JinkoSolar,JKM575N-72HL4-V,TOPCon,monoSi,575.0,42.22,13.62,50.88,14.39,0.046,-0.25,-0.3,72,144 half-cells; 72-series electrical topology inferred for SDM,2.583252,22.3,45.0,glass_polymer_open_rack,99.0,0.4,30,,https://www.jinkosolar.com/uploads/JKM555-575N-72HL4-%28V%29-F1-EN%20%28IEC%202016%29.pdf,manufacturer_datasheet,575 W STC row. Datasheet/warranty family states 1% first-year and 0.40%/yr thereafter. Quote intentionally blank.,,technology_class_proxy,,,not_used_in_decision_unless_calibrated,all,,,,,,
++MOD_HJT_REC_ALPHA_PURE_RX_470,TECH_03,REC,Alpha Pure-RX 470,HJT,monoSi,470.0,55.4,8.49,65.7,8.95,0.04,-0.24,-0.24,88,datasheet lists 88 half-cut HJT cells; electrical voltage supports 88-series SDM interpretation,2.08,22.6,44.0,glass_polymer_open_rack,98.0,0.25,25,,https://www.recgroup.com/sites/default/files/2025-11/DS_Alpha_Pure-RX_IEC_EN_AUCEC_101125.pdf,manufacturer_datasheet,470 W STC row; 98% Year 1 and 0.25% annual degradation warranty. Quote intentionally blank.,,technology_class_proxy,,,not_used_in_decision_unless_calibrated,residential,,,,,,
++MOD_CDTE_FIRST_SOLAR_SERIES7_TR1_530,TECH_06,First Solar,Series 7 TR1 530,CdTe Thin Film,cdte,530.0,186.9,2.84,226.7,3.05,0.04,-0.28,-0.32,268,"datasheet states CdTe thin-film semiconductor, up to 268 cells; seeded as 268 for this model record and must be verified before bankability use",2.8,19.0,45.0,glass_glass_open_rack,98.0,0.3,30,,https://www.firstsolar.com/-/media/First-Solar/Technical-Documents/Series-7/Series-7-TR1-Datasheet.ashx,manufacturer_datasheet,530 W STC row; datasheet states 0.30%/yr warranted degradation and >89% after 30 years. Quote intentionally blank.,,technology_class_proxy,,,not_used_in_decision_unless_calibrated,utility,,,,,,
+diff -ruN v8_2_baseline/data/processed/parameter_use_policy.csv solaryn_v9_work/data/processed/parameter_use_policy.csv
+--- v8_2_baseline/data/processed/parameter_use_policy.csv	2026-08-18 09:14:10.000000000 +0000
++++ solaryn_v9_work/data/processed/parameter_use_policy.csv	2026-08-19 13:58:10.838866646 +0000
+@@ -1,19 +1,25 @@
+ field,role,decision_use,note
+-module datasheet Vmp/Imp/Voc/Isc,EPC IV fit,YES_EPC,Required sourced module-level STC inputs; validated before nonlinear fit
+-alpha_isc_pct_c,EPC IV fit,YES_EPC,Converted from percent/C to A/C using Isc before fit_cec_sam
+-beta_voc_pct_c,EPC IV fit,YES_EPC,Converted from percent/C to V/C using Voc before fit_cec_sam
+-gamma_pmax_pct_c,EPC IV fit,YES_EPC,Sourced module datasheet temperature coefficient used by CEC parameter fit
+-cells_in_series,EPC IV fit,YES_EPC,Electrical series cell count; must be verified for unusual module architectures
+-module_efficiency_pct,EPC comparison,DISPLAY_AND_AREA,Used for area interpretation; specific-energy ranking comes from IV model
+-module_area_m2,EPC economics,YES_EPC_AREA_BOS,Used only in area-sensitive BOS switching proxy
+-quote_usd_w,EPC economics,ONLY_USER_QUOTE,Must be actual EPC quote; seed values intentionally blank
+-first_year_retention_pct,lifetime scenario,YES_SCENARIO,Manufacturer power-warranty endpoint translated to explicit scenario; not energy guarantee
+-annual_warranty_degradation_pct_year,lifetime scenario,YES_SCENARIO,Manufacturer warranty slope; not climate-predicted field degradation
+-spectral class,EPC sensitivity,YES_AS_PROXY,First-order pvlib class correction; robust leader must not depend solely on proxy
+-common project soiling,EPC energy,YES_PROJECT_ASSUMPTION,Same project-level loss applied to all candidates unless module-specific evidence exists
+-material bandgap/mobility/lifetime/defects,material/device research,NO_EPC_RANK,Preserved in original Solaryn database for research/future validated material engine
+-soiling_resilience_score,research proxy,NO_EPC_RANK,Not used to manufacture procurement differences
+-heat_resilience_score,research proxy,NO_EPC_RANK,Not used to manufacture procurement differences
+-humidity_resilience_score,research/stress metadata,NO_EPC_RANK,May support future calibrated reliability model
+-confidence_score,generic legacy metadata,NO_EPC,Not quantified probability and not used in EPC confidence
+-physics_quality_score,legacy derived diagnostic,NO_EPC_RANK,Not a validated universal PV quality metric
++IEC 61853 module-specific Pmax G-T matrix,electrical performance,YES_PREFERRED,"Measured module-specific irradiance-temperature surface; validate span, duplicates and STC anchor; no technology score."
++CEC single-diode datasheet fit,electrical performance,YES_CSI_FALLBACK,Crystalline-silicon fallback only when module-specific G-T matrix is absent; model evidence and uncertainty guardrail exposed.
++CEC single-diode for non-c-Si without validated evidence,model-form sensitivity,NO_ROBUST_WINNER,Exploratory display only. Cannot determine robust cross-technology winner.
++Vmp/Imp/Voc/Isc/Pmax,module electrical,YES_WHEN_MODEL_USED,Sourced module-level STC inputs with hard consistency checks.
++alpha_isc_pct_c / beta_voc_pct_c / gamma_pmax_pct_c,module electrical,YES_CSI_FALLBACK,Converted/used inside physical model; never turned into a standalone technology score.
++cells_in_series,module electrical,YES_CSI_FALLBACK,Electrical series count; must be verified for half-cut/unusual architectures.
++Perez-Driesse POA transposition,resource physics,YES_COMMON,Anisotropic diffuse transposition reduces climate-dependent diffuse-fraction bias versus an isotropic default.
++common physical IAM,optics,YES_COMMON_FALLBACK,Same glass optical treatment for candidates; module-specific IEC 61853-2 IAM preferred in future.
++module-specific IAM curve,optics,NOT_YET_IMPLEMENTED,Store evidence for future; current decision uses common optical fallback to avoid fabricated module differences.
++Faiman u0/u1,thermal,YES_PREFERRED,Use module-specific IEC-61853 thermal coefficients when supplied.
++SAPM construction thermal parameters,thermal,YES_FALLBACK,Generic construction-class fallback; module and cell temperatures separated and evidence exposed.
++technology-class spectral factor,spectral,SENSITIVITY_ONLY,pvlib class proxy can show sensitivity but cannot alter primary winner.
++module-specific EQE/SR declaration,spectral,NOT_YET_DECISION,EQE alone is insufficient; requires time-resolved spectral irradiance or validated module-specific correction engine. V9 fails closed.
++common project soiling,loss,YES_COMMON,Same site loss for all candidates; no technology-resilience score.
++common project degradation scenario,lifetime/economics,YES_PRIMARY_SENSITIVITY,Same declared degradation sensitivity for every candidate until calibrated module/BOM field model exists.
++manufacturer warranty degradation,lifetime/economics,SENSITIVITY_ONLY,Warranty language is not field degradation and cannot manufacture primary winner or primary price threshold.
++environmental stress exposures,reliability,DIAGNOSTIC_ONLY,Hot/damp/UV/thermal-cycle descriptors are not converted into %/year degradation without calibrated evidence.
++quote_usd_w,economics,ONLY_REAL_USER_QUOTE,Seed values blank. Switching analysis requires real baseline quote.
++area-sensitive BOS,economics,YES_PROXY,Only land/racking/area-sensitive term; explicitly not full BOS or LCOE.
++economic switching threshold,economics,YES_IF_ENERGY_MODEL_ELIGIBLE,Blocked for candidates whose energy model evidence is decision-ineligible.
++energy-rating uncertainty guardrail,decision,YES_GUARDRAIL,Default 2% screening threshold; not a probabilistic confidence interval.
++project segment,eligibility,YES_FILTER,Avoid apples-to-oranges product comparisons.
++legacy heat/humidity/soiling/low-light scores,research heuristic,NO_EPC_RANK,Never imported into EPC production decision path.
++material bandgap/mobility/lifetime/defects/absorber thickness,material research,NO_EPC_CURRENT,Preserved for future validated R&D/manufacturer physics layer; no current procurement rank effect.

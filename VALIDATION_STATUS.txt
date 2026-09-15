@@ -1,0 +1,73 @@
+SOLARYN V9.2.1 FINAL HARDENING STATUS
+=====================================
+Status date: 2026-09-08
+
+OFFLINE SOFTWARE REGRESSION
+---------------------------
+Python compile check: PASS
+Automated offline suite: PASS (64/64)
+Original audited suite: 54 tests
+Final hardening regressions added: 3 tests
+  - frozen Riyadh three-candidate benchmark + candidate-set SHA256
+  - frozen Riyadh four-candidate universe + candidate-set SHA256
+  - pvlib azimuth -> PVGIS aspect convention (south/east/west/north)
+Frontend UX contract regressions added: 5 tests
+  - persistent product navigation and permanent customer-facing naming
+  - customer UI excludes release/version terminology except analysis provenance
+  - research-screening boundary and non-commercial terminology
+  - actionable empty, missing-quote and live-service failure states
+  - commercial-decision order, workflow stages and climate progress state
+External measured DVP regressions added: 2 tests
+  - reproduces the IEA PVPS Task 13 / SUPSI 12-month Pmax validation metrics
+  - enforces the limited interpolation-layer scope in machine-readable output
+Offline src line coverage: regenerated; see outputs/COVERAGE_REPORT.txt and outputs/coverage_html/
+
+LIVE INTEGRATION STATUS
+-----------------------
+NASA POWER hourly API smoke/integration: PASS on 2026-08-28 (Riyadh 2020; 8,784 rows)
+PVGIS seriescalc smoke/integration: PASS on 2026-08-28 (Riyadh 2020; 8,784 rows)
+NASA -> pvlib -> CEC/PySAM full Riyadh benchmark: PASS on 2026-08-28
+Latest live recheck: PASS on 2026-09-08 (NASA 8,784 rows; PVGIS 8,784 rows; frozen Riyadh yields reproduced)
+Latest live resource comparison: NASA->pvlib POA 2,346.767 kWh/m2; PVGIS 2,473.875 kWh/m2; delta +5.138% PVGIS vs NASA/pvlib
+Interactive Streamlit browser workflow: PASS on 2026-09-04 (Riyadh 2020; 3 candidates; no supplier quotes)
+Responsive browser checks: PASS at 1280 x 720 and 1440 x 900; no horizontal overflow observed
+Keyboard navigation smoke check: PASS for primary sidebar navigation
+Commercial quote/economics browser flow: NOT EXECUTED; no real supplier quote was supplied
+Live-service PASS is time/service-specific and is not an offline regression guarantee.
+
+FROZEN RIYADH REGRESSIONS
+-------------------------
+Three-candidate IDs:
+  MOD_CDTE_FIRST_SOLAR_SERIES7_TR1_530
+  MOD_PERC_LONGI_LR5_72HPH_550M
+  MOD_TOPCON_JINKO_JKM575N_72HL4_V
+Three-candidate SHA256: e5953b0d0b3cbf873ef2c04c6780947547e90a115b3c10a6e877598626c0f590
+Nominal leader: MOD_TOPCON_JINKO_JKM575N_72HL4_V
+Lead over second: 1.2103052741519815%
+Robust winner: none
+
+Four-candidate IDs add:
+  MOD_HJT_REC_ALPHA_PURE_RX_470
+Four-candidate SHA256: 25ec930ffa48a856493cfcf88b8682181c065ec2d9bdf23946383a87cd7a7376
+Nominal leader: MOD_HJT_REC_ALPHA_PURE_RX_470
+Lead over second: 1.4839640627860653%
+Robust winner: none
+
+SCIENTIFIC / COMMERCIAL VALIDATION GATES
+----------------------------------------
+Climate/resource validation: PENDING
+c-Si off-STC validation: PARTIAL — IEC 61853 Pmax G-T interpolation layer externally validated for one reference c-Si module; Jinko/LONGi candidate-specific validation remains PENDING
+Cross-technology validation: PENDING
+IEC measured-data validation: PASS FOR Pmax G-T INTERPOLATION LAYER ONLY — not a full decision-engine or candidate-specific PASS
+Economics/procurement validation: PENDING
+Historical EPC validation: PENDING
+Bankability: NOT CLAIMED
+
+DECISION BOUNDARIES
+-------------------
+Technology-class spectral proxy: SENSITIVITY ONLY
+Manufacturer warranty degradation: SENSITIVITY ONLY
+Common degradation: DECLARED SCENARIO ONLY
+2% guardrail: POC VALIDATION/DECISION GUARDRAIL; NOT A CONFIDENCE INTERVAL
+First Solar fallback: EXPLORATORY; DECISION ELIGIBLE = NO
+Missing supplier quote: PHYSICS AVAILABLE; ECONOMICS DISABLED

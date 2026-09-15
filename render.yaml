@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: solaryn-demo
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r Solaryn_Platform/requirements-lock.txt
+    startCommand: cd Solaryn_Platform && uvicorn foundation:create_app --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11

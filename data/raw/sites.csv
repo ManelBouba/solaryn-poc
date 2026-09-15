@@ -1,0 +1,11 @@
+site_id,project_name,country,region,latitude,longitude,site_type,system_size_mw,avg_temp_c,max_temp_c,ghi_kwh_m2_year,dni_kwh_m2_year,humidity_pct,rainfall_mm_year,wind_speed_m_s,dust_soiling_risk,elevation_m,salinity_risk
+SITE_BE_01,Brussels Commercial PV,Belgium,Brussels,50.8503,4.3517,commercial,5,11.0,32.0,1000,900,75,820,3.5,1,13,0
+SITE_BE_02,Antwerp Port PV,Belgium,Antwerp,51.2194,4.4025,commercial,10,10.5,30.0,980,880,78,850,3.8,1,10,1
+SITE_DZ_01,Algiers Coastal Utility,Algeria,Algiers,36.7538,3.0588,utility,50,22.0,42.0,1900,1800,60,600,4.5,2,25,1
+SITE_DZ_02,Tamanrasset Desert Plant,Algeria,Tamanrasset,22.7903,5.5193,utility,100,28.0,48.0,2200,2100,35,100,5.2,3,500,0
+SITE_DZ_03,Ghardaia Utility PV,Algeria,Ghardaia,32.4891,3.6738,utility,80,26.0,46.0,2150,2020,38,130,4.8,3,468,0
+SITE_SA_01,Riyadh Mega Solar,Saudi Arabia,Riyadh,24.7136,46.6753,utility,200,30.0,50.0,2300,2200,25,80,5.5,3,600,0
+SITE_SA_02,Jeddah Coastal Solar,Saudi Arabia,Jeddah,21.4858,39.1925,utility,150,29.0,45.0,2100,2000,65,60,4.8,2,12,2
+SITE_SA_03,NEOM Desert Solar,Saudi Arabia,Tabuk,28.3838,36.555,utility,250,27.0,47.0,2250,2150,30,40,5.7,3,700,1
+SITE_EG_01,Aswan Desert Utility,Egypt,Aswan,24.0889,32.8998,utility,100,28.5,48.0,2350,2500,25,5,4.2,3,194,0
+SITE_EG_02,Cairo Utility PV,Egypt,Cairo,30.0444,31.2357,utility,80,22.0,42.0,2050,2150,52,25,3.8,2,23,0

@@ -1,0 +1,492 @@
+--- a/src/module_iv_engine.py
++++ b/src/module_iv_engine.py
+@@ -110,46 +110,145 @@
+     return mapping.get(cec)
+ 
+ 
+-def spectral_factor_for_module(weather: pd.DataFrame, row: pd.Series) -> pd.Series:
+-    """Technology-class spectral factor used ONLY as a sensitivity by default.
++def spectral_factor_for_module(
++    weather: pd.DataFrame,
++    row: pd.Series,
++    *,
++    strict: bool = False,
++) -> pd.Series:
++    """Return a technology-class spectral factor for sensitivity analysis.
++
++    The pvlib First Solar model has a bounded atmospheric input domain. Because
++    Solaryn V9 treats this technology-class model as a *sensitivity* rather than
++    primary decision evidence, unsupported daylight hours must not abort the
++    broadband EPC simulation. In non-strict mode those hours receive a neutral
++    factor of 1.0 (no spectral correction) and the coverage shortfall is exposed
++    in ``Series.attrs`` for reporting.
+ 
+-    IEA Task 13 emphasizes that spectral response can vary materially within the same
+-    technology because of cell quality, coatings, encapsulation and glass. Therefore a
+-    technology-class proxy is never allowed to silently become the primary decision
+-    energy unless module-specific spectral evidence is explicitly supplied.
++    ``strict=True`` is reserved for a future decision-grade spectral path: any
++    unsupported daylight hour then fails closed instead of being neutralized.
+     """
+     require_pvlib()
++    index = weather.index
++    neutral = pd.Series(1.0, index=index, dtype=float)
++
+     module_type = _spectral_module_type(row)
++    poa = pd.to_numeric(
++        weather.get("poa_optical_w_m2", weather.get("poa_w_m2", pd.Series(0.0, index=index))),
++        errors="coerce",
++    ).fillna(0.0)
++    daylight = poa > 20.0
++    daylight_count = int(daylight.sum())
++
++    def _attach_metadata(
++        factor: pd.Series,
++        *,
++        status: str,
++        invalid_mask: pd.Series | None = None,
++        note: str = "",
++    ) -> pd.Series:
++        invalid = (
++            invalid_mask.reindex(index, fill_value=False).astype(bool)
++            if invalid_mask is not None
++            else pd.Series(False, index=index, dtype=bool)
++        )
++        invalid_count = int((invalid & daylight).sum())
++        invalid_pct = 100.0 * invalid_count / max(daylight_count, 1)
++        factor.attrs.update({
++            "spectral_proxy_status": status,
++            "spectral_proxy_note": note,
++            "spectral_proxy_invalid_daylight_hours": invalid_count,
++            "spectral_proxy_invalid_daylight_fraction_pct": invalid_pct,
++            "spectral_proxy_valid_daylight_fraction_pct": 100.0 - invalid_pct if daylight_count else 100.0,
++            "spectral_proxy_fallback_policy": (
++                "neutral_factor_1.0_no_spectral_correction_for_unsupported_hours"
++                if invalid_count else "none"
++            ),
++            "spectral_proxy_invalid_daylight_mask": invalid,
++        })
++        return factor
++
+     if module_type is None:
+-        return pd.Series(1.0, index=weather.index, dtype=float)
++        return _attach_metadata(
++            neutral,
++            status="not_available_for_module_class",
++            note="No supported pvlib First Solar technology-class proxy for this module class.",
++        )
+ 
+-    if "airmass_absolute" not in weather or "precipitable_water_cm" not in weather:
+-        raise ValueError("Spectral-ready weather requires airmass_absolute and precipitable_water_cm.")
++    required = {"airmass_absolute", "precipitable_water_cm"}
++    missing = sorted(required.difference(weather.columns))
++    if missing:
++        if strict and daylight_count:
++            raise ValueError(
++                "Decision-grade spectral calculation requires atmospheric inputs: "
++                + ", ".join(missing)
++            )
++        invalid = daylight.copy()
++        return _attach_metadata(
++            neutral,
++            status="atmospheric_inputs_unavailable_neutralized",
++            invalid_mask=invalid,
++            note=(
++                "Spectral sensitivity unavailable because required atmospheric inputs are missing; "
++                "broadband simulation remains primary."
++            ),
++        )
+ 
+     am = pd.to_numeric(weather["airmass_absolute"], errors="coerce")
+     pw = pd.to_numeric(weather["precipitable_water_cm"], errors="coerce")
+-    poa = pd.to_numeric(weather.get("poa_optical_w_m2", weather["poa_w_m2"]), errors="coerce").fillna(0.0)
+ 
+-    factor = pd.Series(
+-        pvlib.spectrum.spectral_factor_firstsolar(
++    # pvlib's current First Solar implementation clips very low PW/AM and high AM,
++    # while PW > 8 cm becomes NaN. We still derive validity from the returned factor
++    # so this remains compatible with future pvlib versions and missing input values.
++    try:
++        raw = pvlib.spectrum.spectral_factor_firstsolar(
+             precipitable_water=pw,
+             airmass_absolute=am,
+             module_type=module_type,
+-        ),
+-        index=weather.index,
+-        dtype=float,
+-    )
+-    daylight = poa > 20.0
++        )
++        factor = pd.Series(raw, index=index, dtype=float)
++    except Exception as exc:
++        if strict and daylight_count:
++            raise ValueError(
++                f"Decision-grade spectral proxy failed for {row['manufacturer']} {row['model']}: {exc}"
++            ) from exc
++        invalid = daylight.copy()
++        return _attach_metadata(
++            neutral,
++            status="calculation_failed_neutralized",
++            invalid_mask=invalid,
++            note=f"Technology-class spectral sensitivity failed safely: {exc}",
++        )
++
+     invalid_daylight = daylight & (~np.isfinite(factor))
+-    if invalid_daylight.any():
+-        pct = 100.0 * float(invalid_daylight.sum()) / max(float(daylight.sum()), 1.0)
++    if invalid_daylight.any() and strict:
++        pct = 100.0 * float(invalid_daylight.sum()) / max(float(daylight_count), 1.0)
+         raise ValueError(
+             f"Spectral proxy is outside its valid input domain for {pct:.1f}% of daylight hours "
+             f"for {row['manufacturer']} {row['model']}."
+         )
++
++    # IMPORTANT: 1.0 is not an invented spectral gain/loss. It means *no spectral
++    # correction* for the unsupported sensitivity hours. The primary broadband
++    # calculation is unchanged and remains the decision energy in V9.
++    factor.loc[invalid_daylight] = 1.0
+     factor.loc[~daylight] = 1.0
+-    return factor
+ 
++    status = "complete_validity" if not invalid_daylight.any() else "partial_validity_neutralized"
++    note = (
++        "All daylight hours were within the executable proxy domain."
++        if not invalid_daylight.any()
++        else (
++            "Unsupported daylight hours were assigned factor 1.0 for the spectral sensitivity only; "
++            "the primary broadband energy calculation was not altered."
++        )
++    )
++    return _attach_metadata(
++        factor,
++        status=status,
++        invalid_mask=invalid_daylight,
++        note=note,
++    )
+ 
+ def _sapm_temperature_parameters(row: pd.Series) -> dict:
+     require_pvlib()
+@@ -334,7 +433,9 @@
+     soiling_ratio = 1.0 - max(0.0, min(100.0, float(common_soiling_loss_pct))) / 100.0
+     poa_raw = pd.to_numeric(weather["poa_w_m2"], errors="coerce").fillna(0).clip(lower=0)
+     poa_optical = pd.to_numeric(weather.get("poa_optical_w_m2", weather["poa_w_m2"]), errors="coerce").fillna(0).clip(lower=0)
+-    spectrum = spectral_factor_for_module(weather, row)
++    spectrum = spectral_factor_for_module(
++        weather, row, strict=bool(spectral_policy["spectral_decision_eligible"])
++    )
+     temp_module, temp_cell = module_operating_temperatures(weather, row)
+     electrical_temperature = (
+         temp_module if model_policy["electrical_model"] == "iec61853_module_specific_matrix" else temp_cell
+@@ -343,15 +444,42 @@
+     effective_broadband = (poa_optical * soiling_ratio).clip(lower=0.0)
+     effective_spectral_proxy = (poa_optical * spectrum * soiling_ratio).clip(lower=0.0)
+ 
+-    pmp_broadband, model_diag = _pmp_for_model(effective_broadband, electrical_temperature, row, model_policy)
+-    pmp_spectral, _ = _pmp_for_model(effective_spectral_proxy, electrical_temperature, row, model_policy)
++    exploratory_model_failure = ""
++    try:
++        pmp_broadband, model_diag = _pmp_for_model(
++            effective_broadband, electrical_temperature, row, model_policy
++        )
++        pmp_spectral, _ = _pmp_for_model(
++            effective_spectral_proxy, electrical_temperature, row, model_policy
++        )
++    except Exception as exc:
++        # A decision-eligible candidate must still fail closed: no hidden electrical
++        # substitute is permitted. A candidate already barred by the evidence policy
++        # (for example CdTe without module-specific IEC 61853 evidence) remains visible
++        # with NaN energy rather than crashing the entire comparison.
++        if bool(model_policy["decision_eligible"]):
++            raise
++        exploratory_model_failure = str(exc)
++        pmp_broadband = pd.Series(np.nan, index=weather.index, dtype=float)
++        pmp_spectral = pd.Series(np.nan, index=weather.index, dtype=float)
++        model_diag = {
++            "matrix_measured_points": 0,
++            "matrix_has_stc_anchor": False,
++            "matrix_stc_relative_error_pct": np.nan,
++            "matrix_irradiance_extrapolation_fraction_pct": np.nan,
++            "matrix_temperature_extrapolation_fraction_pct": np.nan,
++            "matrix_nearest_fallback_fraction_pct": np.nan,
++            "matrix_interpolation_policy": "not_available_exploratory_model_failed",
++        }
+ 
+     pmax = float(row["pmax_w"])
+     specific_broadband = pmp_broadband / pmax
+     specific_spectral = pmp_spectral / pmax
+-    weights = pd.to_numeric(weather.get("days_weight", pd.Series(1.0, index=weather.index)), errors="coerce").fillna(1.0)
+-    broadband_yield = float((specific_broadband * weights).sum())
+-    spectral_yield = float((specific_spectral * weights).sum())
++    weights = pd.to_numeric(
++        weather.get("days_weight", pd.Series(1.0, index=weather.index)), errors="coerce"
++    ).fillna(1.0)
++    broadband_yield = float((specific_broadband * weights).sum(min_count=1))
++    spectral_yield = float((specific_spectral * weights).sum(min_count=1))
+ 
+     # Primary decision energy does not use a generic technology-class spectral proxy.
+     if spectral_policy["spectral_decision_eligible"]:
+@@ -391,7 +519,14 @@
+         "spectral_decision_eligible": bool(spectral_policy["spectral_decision_eligible"]),
+         "spectral_evidence_level": spectral_policy["spectral_evidence_level"],
+         "spectral_policy": spectral_policy["spectral_policy"],
++        "spectral_proxy_status": spectrum.attrs.get("spectral_proxy_status", "unknown"),
++        "spectral_proxy_note": spectrum.attrs.get("spectral_proxy_note", ""),
++        "spectral_proxy_invalid_daylight_hours": int(spectrum.attrs.get("spectral_proxy_invalid_daylight_hours", 0)),
++        "spectral_proxy_invalid_daylight_fraction_pct": float(spectrum.attrs.get("spectral_proxy_invalid_daylight_fraction_pct", 0.0)),
++        "spectral_proxy_valid_daylight_fraction_pct": float(spectrum.attrs.get("spectral_proxy_valid_daylight_fraction_pct", 100.0)),
++        "spectral_proxy_fallback_policy": spectrum.attrs.get("spectral_proxy_fallback_policy", "none"),
+         "decision_spectral_basis": decision_spectral_basis,
++        "exploratory_electrical_model_failure": exploratory_model_failure,
+         "soiling_basis": "common_site_assumption_no_technology_score",
+         "soiling_loss_pct": float(common_soiling_loss_pct),
+         "thermal_model": thermal_policy["thermal_model"],
+@@ -405,6 +540,9 @@
+     hourly["module_cell_temperature_c"] = temp_cell
+     hourly["electrical_model_temperature_c"] = electrical_temperature
+     hourly["spectral_factor"] = spectrum
++    hourly["spectral_proxy_fallback_applied"] = spectrum.attrs.get(
++        "spectral_proxy_invalid_daylight_mask", pd.Series(False, index=weather.index)
++    ).reindex(weather.index, fill_value=False).astype(bool)
+     hourly["effective_irradiance_broadband_w_m2"] = effective_broadband
+     hourly["effective_irradiance_spectral_proxy_w_m2"] = effective_spectral_proxy
+     hourly["effective_irradiance_w_m2"] = effective_broadband
+--- a/src/lifetime_engine.py
++++ b/src/lifetime_engine.py
+@@ -90,7 +90,7 @@
+     curve["cumulative_specific_energy_kwh_kwp"] = curve["annual_specific_energy_kwh_kwp"].cumsum()
+     return {
+         "curve": curve,
+-        "lifetime_energy_common_degradation_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum()),
++        "lifetime_energy_common_degradation_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum(min_count=1)),
+         "year_25_common_scenario_end_retention_pct": float(curve.iloc[-1]["end_of_year_retention_pct"]),
+         "basis": "common_linear_project_degradation_sensitivity_same_for_all_candidates_not_field_prediction",
+     }
+@@ -110,7 +110,7 @@
+     curve["cumulative_specific_energy_kwh_kwp"] = curve["annual_specific_energy_kwh_kwp"].cumsum()
+     return {
+         "curve": curve,
+-        "lifetime_energy_warranty_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum()),
++        "lifetime_energy_warranty_scenario_kwh_kwp": float(curve["annual_specific_energy_kwh_kwp"].sum(min_count=1)),
+         "end_of_year_25_warranty_retention_pct": float(curve.iloc[-1]["end_of_year_warranty_retention_pct"]),
+         "basis": "warranty_derived_linear_power_retention_scenario_not_energy_guarantee_or_field_prediction",
+     }
+--- a/app/epc_module_mode.py
++++ b/app/epc_module_mode.py
+@@ -273,11 +273,27 @@
+ 
+     if failed:
+         st.error(
+-            "EPC IV fitting/simulation failed for one or more candidates. Solaryn will not "
++            "EPC IV fitting/simulation failed for one or more decision-grade candidates. Solaryn will not "
+             "silently substitute heuristic parameters:\n\n- " + "\n- ".join(failed)
+         )
+         st.stop()
+ 
++    spectral_warnings = []
++    for summary in summaries:
++        invalid_pct = float(summary.get("spectral_proxy_invalid_daylight_fraction_pct", 0.0) or 0.0)
++        if invalid_pct > 0:
++            spectral_warnings.append(
++                f"{summary['manufacturer']} {summary['model']}: {invalid_pct:.1f}% of daylight hours "
++                "were outside the executable technology-class spectral proxy domain and were assigned "
++                "a neutral factor of 1.0 for the spectral sensitivity only."
++            )
++    if spectral_warnings:
++        st.warning(
++            "Spectral sensitivity coverage warning — broadband EPC physics continued normally. "
++            "No unsupported spectral value was allowed to affect the primary decision:\n\n- "
++            + "\n- ".join(spectral_warnings)
++        )
++
+     results = add_lifetime_metrics(
+         pd.DataFrame(summaries), selected, years=25, common_degradation_pct_year=common_degradation
+     )
+@@ -357,7 +373,10 @@
+         "avg_cell_temperature_c_daylight", "p95_cell_temperature_c_daylight",
+         "lifetime_energy_common_degradation_scenario_kwh_kwp", "lifetime_energy_warranty_scenario_kwh_kwp",
+         "lifetime_project_dc_energy_mwh", "year_25_common_scenario_end_retention_pct", "year_25_warranty_end_retention_pct",
+-        "electrical_model", "decision_eligible", "model_evidence_level", "spectral_policy", "thermal_model", "thermal_evidence_level",
++        "electrical_model", "decision_eligible", "model_evidence_level",
++        "spectral_policy", "spectral_proxy_status", "spectral_proxy_valid_daylight_fraction_pct",
++        "spectral_proxy_fallback_policy", "exploratory_electrical_model_failure",
++        "thermal_model", "thermal_evidence_level",
+     ]].sort_values("lifetime_energy_common_degradation_scenario_kwh_kwp", ascending=False)
+     st.markdown("### Physics comparison")
+     st.dataframe(comparison, hide_index=True, use_container_width=True)
+--- a/tests/test_bias_correction_v9.py
++++ b/tests/test_bias_correction_v9.py
+@@ -353,3 +353,84 @@
+     audit = pd.read_csv(root / "docs" / "PARAMETER_AUDIT_V9.csv")
+     audited = set(audit["parameter"].astype(str))
+     assert set(modules.columns).issubset(audited)
++
++
++def test_spectral_proxy_partial_domain_is_nonfatal_for_sensitivity(monkeypatch):
++    """Regression: a small unsupported spectral fraction must not stop broadband EPC physics."""
++    import types
++    import src.module_iv_engine as eng
++
++    def fake_firstsolar(precipitable_water, airmass_absolute, module_type=None, **kwargs):
++        out = np.ones(len(precipitable_water), dtype=float)
++        out[0] = np.nan  # 1 of 100 daylight hours outside executable proxy domain
++        return out
++
++    fake_pvlib = types.SimpleNamespace(
++        spectrum=types.SimpleNamespace(spectral_factor_firstsolar=fake_firstsolar)
++    )
++    monkeypatch.setattr(eng, "pvlib", fake_pvlib)
++
++    weather = pd.DataFrame({
++        "poa_w_m2": np.full(100, 500.0),
++        "airmass_absolute": np.full(100, 1.5),
++        "precipitable_water_cm": np.full(100, 2.0),
++    })
++    row = pd.Series({
++        "module_id": "M",
++        "manufacturer": "Example",
++        "model": "Module",
++        "cec_celltype": "monoSi",
++    })
++
++    factor = eng.spectral_factor_for_module(weather, row, strict=False)
++    assert np.isfinite(factor).all()
++    assert factor.iloc[0] == pytest.approx(1.0)
++    assert factor.attrs["spectral_proxy_invalid_daylight_fraction_pct"] == pytest.approx(1.0)
++    assert factor.attrs["spectral_proxy_valid_daylight_fraction_pct"] == pytest.approx(99.0)
++    assert factor.attrs["spectral_proxy_status"] == "partial_validity_neutralized"
++
++
++def test_spectral_proxy_partial_domain_still_fails_closed_if_decision_grade(monkeypatch):
++    import types
++    import src.module_iv_engine as eng
++
++    def fake_firstsolar(precipitable_water, airmass_absolute, module_type=None, **kwargs):
++        out = np.ones(len(precipitable_water), dtype=float)
++        out[0] = np.nan
++        return out
++
++    fake_pvlib = types.SimpleNamespace(
++        spectrum=types.SimpleNamespace(spectral_factor_firstsolar=fake_firstsolar)
++    )
++    monkeypatch.setattr(eng, "pvlib", fake_pvlib)
++
++    weather = pd.DataFrame({
++        "poa_w_m2": np.full(100, 500.0),
++        "airmass_absolute": np.full(100, 1.5),
++        "precipitable_water_cm": np.full(100, 2.0),
++    })
++    row = pd.Series({
++        "module_id": "M",
++        "manufacturer": "Example",
++        "model": "Module",
++        "cec_celltype": "monoSi",
++    })
++
++    with pytest.raises(ValueError, match="outside its valid input domain for 1.0%"):
++        eng.spectral_factor_for_module(weather, row, strict=True)
++
++
++def test_lifetime_metrics_preserve_missing_exploratory_energy_as_nan():
++    results = pd.DataFrame([
++        {"module_id": "INELIGIBLE", "annual_yield_kwh_kwp": np.nan},
++    ])
++    modules = pd.DataFrame([
++        {
++            "module_id": "INELIGIBLE",
++            "first_year_retention_pct": 98.0,
++            "annual_warranty_degradation_pct_year": 0.30,
++        }
++    ])
++    out = add_lifetime_metrics(results, modules)
++    assert np.isnan(out.iloc[0]["lifetime_energy_common_degradation_scenario_kwh_kwp"])
++    assert np.isnan(out.iloc[0]["lifetime_energy_warranty_scenario_kwh_kwp"])
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,4 @@
+-# SOLARYN V9 — Bias-Corrected PV Module / Technology Intelligence PoC
++# SOLARYN V9.1 — Bias-Corrected PV Module / Technology Intelligence PoC
+ 
+ SOLARYN V9 preserves the original technology/material research vision while replacing the commercial decision path that could be dominated by heuristic technology weights.
+ 
+@@ -19,6 +19,10 @@
+ 
+ The original 30-technology/material database remains available in **Research Screening** mode, but its weighted scores are explicitly heuristic and cannot become the procurement decision path.
+ 
++## V9.1 runtime correction
++
++V9.1 keeps the V9 evidence hierarchy unchanged and fixes the live spectral-domain crash: unsupported hours in the technology-class spectral **sensitivity** are neutralized to factor 1.0 and reported instead of aborting the primary broadband calculation. Decision-grade spectral use would still fail closed. Decision-ineligible exploratory electrical-model failures are also reported without crashing valid candidates. See `docs/CHANGELOG_V9_1_RUNTIME_FIX.md`.
++
+ ## Run
+ 
+ ```bash
+@@ -39,7 +43,7 @@
+ python -m compileall src app tests
+ ```
+ 
+-At packaging time the internal suite passes **38/38** tests.
++At packaging time the internal suite passes **41/41** tests.
+ 
+ ## Important scientific boundary
+ 
+--- a/VALIDATION_STATUS.txt
++++ b/VALIDATION_STATUS.txt
+@@ -1,12 +1,12 @@
+-SOLARYN V9 BIAS-CORRECTED BUILD STATUS
++SOLARYN V9.1 BIAS-CORRECTED BUILD STATUS
+ ======================================
+-Internal regression/unit tests: PASS (38/38 at packaging)
++Internal regression/unit tests: PASS (41/41 at packaging)
+ Python compileall: PASS
+ Legacy heuristic bias audit: COMPLETED
+ Synthetic IEC-GT anti-bias behavior test: PASS (software behavior only; not real PV validation)
+ IEC-61853 evidence hierarchy: IMPLEMENTED
+ Non-c-Si model-form fail-closed gate: IMPLEMENTED
+-Technology-class spectral proxy: SENSITIVITY ONLY
++Technology-class spectral proxy: SENSITIVITY ONLY; PARTIAL-DOMAIN HOURS NONFATAL + EXPLICITLY REPORTED
+ Manufacturer warranty degradation: SENSITIVITY ONLY
+ Common degradation primary scenario: IMPLEMENTED
+ Uncertainty / no-robust-winner gate: IMPLEMENTED
+--- /dev/null
++++ b/docs/CHANGELOG_V9_1_RUNTIME_FIX.md
+@@ -0,0 +1,41 @@
++# SOLARYN V9.1 Runtime / Evidence-Gate Fix
++
++This patch keeps the V9 scientific architecture unchanged and corrects two runtime inconsistencies exposed during a live EPC comparison.
++
++## 1. Spectral proxy no longer aborts broadband EPC physics
++
++The pvlib First Solar spectral mismatch model has bounded atmospheric inputs. V9 already classifies this technology-class proxy as sensitivity-only, but the implementation incorrectly raised a fatal error when a small fraction of daylight hours returned a non-finite proxy value.
++
++V9.1 now:
++
++- keeps the broadband calculation as the primary energy path;
++- assigns a neutral spectral factor of 1.0 only to unsupported sensitivity hours;
++- records the invalid and valid daylight coverage percentages;
++- exposes the fallback policy in the result table and hourly export;
++- still fails closed if a future decision-grade spectral path is explicitly run in strict mode.
++
++A neutral factor of 1.0 means “no spectral correction for this unsupported hour”; it does not create a technology gain or penalty.
++
++## 2. Decision-ineligible exploratory electrical fits cannot crash the whole comparison
++
++Non-c-Si candidates without module-specific IEC 61853 evidence are already decision-ineligible under V9 policy. If their exploratory CEC fit fails, V9.1 keeps the candidate visible with missing energy outputs and an explicit model-failure diagnostic rather than terminating otherwise valid decision-grade candidate simulations.
++
++No substitute electrical parameters are generated. A decision-grade candidate still fails closed if its accepted model fails.
++
++## 3. Missing exploratory energy remains missing
++
++Lifetime calculations now preserve NaN when annual exploratory energy is unavailable instead of allowing an all-NaN sum to become zero.
++
++## Validation
++
++- Python compileall: PASS
++- Regression/unit tests: 41/41 PASS
++- Added regression coverage for the exact 1% spectral-domain failure mode
++- Added strict-mode regression proving a decision-grade spectral path still fails closed
++- Added regression proving unavailable exploratory annual energy remains NaN in lifetime outputs
++
++## Scientific reference
++
++pvlib `spectral_factor_firstsolar` documentation/source defines atmospheric validity controls and notes that the default technology coefficients are derived from representative module spectral responses rather than every commercial module model:
++
++https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.spectrum.spectral_factor_firstsolar.html

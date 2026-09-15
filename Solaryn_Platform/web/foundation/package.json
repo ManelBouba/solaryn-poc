@@ -1,0 +1,11 @@
+{
+  "name": "solaryn-foundation-client",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit --allowJs --checkJs --lib es2022,dom --module esnext --target es2022 api.js contracts.d.ts logo.js",
+    "lint": "eslint app.js api.js logo.js && node --check app.js && node --check api.js && node --check logo.js",
+    "build": "npm run lint && npm run typecheck"
+  },
+  "devDependencies": { "typescript": "5.9.3", "eslint": "9.39.1" }
+}

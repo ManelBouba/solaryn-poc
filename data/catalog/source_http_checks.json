@@ -1,0 +1,106 @@
+{
+  "checked_date": "2026-09-15",
+  "purpose": "Source reachability and response hashes; not independent scientific validation",
+  "checks": [
+    {
+      "url": "https://static.longi.com/L_Gi_LE_PM_T_PMD_059_F119_LR_5_72_HPH_540_560_M_35_35_and_15_G2_V15_CHT_9ec1618dcc.pdf",
+      "status": 200,
+      "sha256": "4dcbaf5d2473892f4b317e80094c8a31fe205dfebc15704d18af832dcb4f52da",
+      "bytes": 6187811,
+      "pdf": true,
+      "final_url": "https://static.longi.com/L_Gi_LE_PM_T_PMD_059_F119_LR_5_72_HPH_540_560_M_35_35_and_15_G2_V15_CHT_9ec1618dcc.pdf"
+    },
+    {
+      "url": "https://www.jinkosolar.com/uploads/JKM555-575N-72HL4-%28V%29-F1-EN%20%28IEC%202016%29.pdf",
+      "status": 200,
+      "sha256": "9f8cd357c2234bbd43a8e3429383a180bc1c1295614b6dee79e7a0b4fd67dcbf",
+      "bytes": 391428,
+      "pdf": true,
+      "final_url": "https://www.jinkosolar.com/uploads/JKM555-575N-72HL4-%28V%29-F1-EN%20%28IEC%202016%29.pdf"
+    },
+    {
+      "url": "https://www.recgroup.com/sites/default/files/2025-11/DS_Alpha_Pure-RX_IEC_EN_AUCEC_101125.pdf",
+      "status": 200,
+      "sha256": "b9b4e3dc6db10f350ef70e8e7122893f04dd8a9eb6d28290e637210fd3a6f3cd",
+      "bytes": 1020515,
+      "pdf": true,
+      "final_url": "https://www.recgroup.com/sites/default/files/2025-11/DS_Alpha_Pure-RX_IEC_EN_AUCEC_101125.pdf"
+    },
+    {
+      "url": "https://www.firstsolar.com/-/media/First-Solar/Technical-Documents/Series-7/Series-7-TR1-High-Bin-Datasheet.pdf",
+      "status": 200,
+      "sha256": "859307aa0bde16aac08eea2da2fe1b67da9fdd83235d33d8ea687e9d825433e2",
+      "bytes": 1118302,
+      "pdf": true,
+      "final_url": "https://www.firstsolar.com/en-EMEA/-/media/First-Solar/Technical-Documents/Series-7/Series-7-TR1-High-Bin-Datasheet.pdf"
+    },
+    {
+      "url": "https://static.longi.com/LR_7_72_HVH_640_670_M_30_30_and_15_Scientist_BGV_02_20250313_EN_1e80b0045b.pdf",
+      "status": 200,
+      "sha256": "2d88d4ceffaea803d7cceb7dfe97eefc3a8c4e4a985dc55e63d9647cab5b723e",
+      "bytes": 6108588,
+      "pdf": true,
+      "final_url": "https://static.longi.com/LR_7_72_HVH_640_670_M_30_30_and_15_Scientist_BGV_02_20250313_EN_1e80b0045b.pdf"
+    },
+    {
+      "url": "https://sunpower.maxeon.com/int/sites/default/files/2024-03/sp_max7_112c_PT_435-445_res_dc_40years_warranty_ds_en_a4_551184A.v4.pdf",
+      "error": "HTTPSConnectionPool(host='sunpower.maxeon.com', port=443): Max retries exceeded with url: /int/sites/default/files/2024-03/sp_max7_112c_PT_435-445_res_dc_40years_warranty_ds_en_a4_551184A.v4.pdf (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1010)')))"
+    },
+    {
+      "url": "https://www.canadiansolar.com/wp-content/uploads/sites/3/2026/04/CS-Datasheet-TOPBiHiKu6_CS6.2-66TB-H_v1.1_F68_L1B_TX.pdf",
+      "status": 200,
+      "sha256": "ad6b63de597c01941ca61e5844550a7a143fa1ade9c895c311bca0fc4d74c729",
+      "bytes": 1740939,
+      "pdf": true,
+      "final_url": "https://www.canadiansolar.com/wp-content/uploads/sites/3/2026/04/CS-Datasheet-TOPBiHiKu6_CS6.2-66TB-H_v1.1_F68_L1B_TX.pdf"
+    },
+    {
+      "url": "https://www.canadiansolar.com/wp-content/uploads/sites/3/2026/05/CS-Datasheet-Low-Carbon_HiHero-HJT_CS6.2-66HB-H_v1.4C1_F68_L1_TX90.pdf",
+      "status": 200,
+      "sha256": "5183350836ab6f298c03c578647da6ec755951d907ed2476f232adceb734de76",
+      "bytes": 1548125,
+      "pdf": true,
+      "final_url": "https://www.canadiansolar.com/wp-content/uploads/sites/3/2026/05/CS-Datasheet-Low-Carbon_HiHero-HJT_CS6.2-66HB-H_v1.4C1_F68_L1_TX90.pdf"
+    },
+    {
+      "url": "https://www.jasolar.com/uploadfile/fujian/2024/0617/d915634529ae62e.pdf",
+      "status": 403,
+      "sha256": "a97101186e30e5b716550915fb799c7d0fa60c74d7a3aaac2bf493f22e2638dd",
+      "bytes": 1666,
+      "pdf": false,
+      "final_url": "https://www.jasolar.com/uploadfile/fujian/2024/0617/d915634529ae62e.pdf"
+    },
+    {
+      "url": "https://www.trinasolar.com/sites/default/files/Datasheet_210_NEG21C.20.pdf",
+      "status": 403,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "pdf": false,
+      "final_url": "https://www.trinasolar.com/sites/default/files/Datasheet_210_NEG21C.20.pdf"
+    },
+    {
+      "url": "https://aikosolar.com/wp-content/uploads/2026/03/Neostar-3SPlus60_193-AIKO-A-MCE60Db_530-550W-1954x1134x30mm_202602_V4.1_ANZ.pdf",
+      "status": 200,
+      "sha256": "0a1c758bf68d3ff25aa9bdccb50c0c00c738d034aa41567fb3933c4074dc89e6",
+      "bytes": 701133,
+      "pdf": true,
+      "final_url": "https://aikosolar.com/wp-content/uploads/2026/03/Neostar-3SPlus60_193-AIKO-A-MCE60Db_530-550W-1954x1134x30mm_202602_V4.1_ANZ.pdf"
+    },
+    {
+      "url": "https://maxeon-production.squarespace.com/s/Maxeon-6-DC-425-440-W.pdf",
+      "status": 200,
+      "sha256": "8e3ef932365ef2e241e0526ad0d2108246d37e589f736e70e3624c119e8ed55b",
+      "bytes": 714799,
+      "pdf": true,
+      "final_url": "https://static1.squarespace.com/static/6740dc6b95218e0ecdaa68f6/t/67a9566c8a14dc1edd91e66e/1785035346104/Maxeon+6+DC%2C+425-440+W.pdf"
+    },
+    {
+      "url": "https://www.avancis.de/_Resources/Persistent/0/2/e/7/02e75f65598a8dd82cb3b909bb74a70ff14e97f8/FE_PD_SKALA_DATASHEET_AU_V4.11.pdf",
+      "status": 200,
+      "sha256": "186d668b6078409789cdedeccde468c1cfe30151b177c08ede57acf49da7cc44",
+      "bytes": 591368,
+      "pdf": true,
+      "final_url": "https://www.avancis.de/_Resources/Persistent/0/2/e/7/02e75f65598a8dd82cb3b909bb74a70ff14e97f8/FE_PD_SKALA_DATASHEET_AU_V4.11.pdf"
+    }
+  ]
+}

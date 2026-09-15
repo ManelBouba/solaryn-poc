@@ -1,0 +1,13 @@
+{
+  "source": "NASA POWER",
+  "latitude": 24.7136,
+  "longitude": 46.6753,
+  "year": 2020,
+  "retrieved_utc": "2026-09-11T08:05:57.744590+00:00",
+  "sha256": "2b8fe478b73ca41df0444a7d27ade034489b32a754d7ae7cdd992f50a74f671d",
+  "metadata": {
+    "nasa_power_endpoint": "https://power.larc.nasa.gov/api/temporal/hourly/point",
+    "time_standard": "UTC",
+    "direct_diffuse_fallback_required": false
+  }
+}

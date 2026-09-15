@@ -1,0 +1,12 @@
+pandas>=2.0,<3.0
+numpy>=1.24,<3.0
+scipy>=1.10,<2.0
+streamlit>=1.35,<2.0
+requests>=2.31,<3.0
+matplotlib>=3.7,<4.0
+folium>=0.16,<1.0
+streamlit-folium>=0.20,<1.0
+pvlib>=0.13,<0.16
+nrel-pysam>=7.1,<8.0
+pytest>=8.0,<9.0
+pytest-cov>=7.1,<8.0

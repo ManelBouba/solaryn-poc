@@ -1,0 +1,52 @@
+# Adapted from Streamlit's shadcn theme template.
+# Local system fonts keep the workspace independent of a font CDN.
+[theme]
+base = "light"
+primaryColor = "#087F8C"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F8F8"
+textColor = "#102A36"
+linkColor = "#087F8C"
+borderColor = "#D3E4E6"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "12px"
+buttonRadius = "12px"
+font = "sans-serif"
+baseFontSize = 16
+headingFontSizes = ["40px", "30px", "23px", "19px", "16px", "14px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+dataframeHeaderBackgroundColor = "#E8F3F4"
+dataframeBorderColor = "#D3E4E6"
+chartCategoricalColors = ["#087F8C", "#F0B429", "#2D6CDF", "#3E9B72", "#9B6BC6", "#E66B4F"]
+chartSequentialColors = ["#EFFBFB", "#D5F1F1", "#B9E5E5", "#8FD2D4", "#5DBAC0", "#2B9DA6", "#087F8C", "#076775", "#07515F", "#063D49"]
+blueColor = "#2D6CDF"
+greenColor = "#23835B"
+orangeColor = "#C56A18"
+yellowColor = "#F0B429"
+redColor = "#C84A4F"
+violetColor = "#8056B3"
+grayColor = "#607A86"
+blueBackgroundColor = "#E8F0FF"
+greenBackgroundColor = "#E6F5ED"
+orangeBackgroundColor = "#FFF1DD"
+yellowBackgroundColor = "#FFF7D6"
+redBackgroundColor = "#FDEBEC"
+
+[theme.sidebar]
+backgroundColor = "#F7FAFA"
+secondaryBackgroundColor = "#E8F3F4"
+textColor = "#0A2845"
+primaryColor = "#087F8C"
+linkColor = "#087F8C"
+borderColor = "#D3E4E6"
+
+[server]
+address = "127.0.0.1"
+headless = true
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

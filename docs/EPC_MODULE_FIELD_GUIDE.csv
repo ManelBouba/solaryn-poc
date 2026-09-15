@@ -1,0 +1,28 @@
+field,meaning,status
+module_id,Unique stable ID for this commercial offer/module,required
+technology_id,Link to original Solaryn technology_master.csv,required
+manufacturer,Manufacturer,required
+model,Exact module model/variant,required
+technology_label,Human-readable class e.g. TOPCon/HJT/CdTe,required
+cec_celltype,CEC fitting class: monoSi/multiSi/polySi/cis/cigs/cdte/amorphous,required
+pmax_w,STC maximum power [W],required
+vmp_v,STC Vmp [V],required
+imp_a,STC Imp [A],required
+voc_v,STC Voc [V],required
+isc_a,STC Isc [A],required
+alpha_isc_pct_c,Isc temperature coefficient [%/°C],required
+beta_voc_pct_c,Voc temperature coefficient [%/°C],required
+gamma_pmax_pct_c,Pmax temperature coefficient [%/°C],required
+cells_in_series,Electrical cells in series used by the SDM,required/verify
+cells_in_series_basis,How series count was established,required
+module_area_m2,One-sided module area [m²],required
+module_efficiency_pct,STC module efficiency [%],required
+noct_c,"Datasheet NOCT/NMOT [°C], evidence/reference",recommended
+thermal_construction,glass_polymer_open_rack or glass_glass_open_rack,required
+first_year_retention_pct,Manufacturer warranty floor at end Year 1 [%],required
+annual_warranty_degradation_pct_year,Manufacturer warranted annual decline after Year 1 [%/year],required
+warranty_years,Power warranty period [years],required
+quote_usd_w,Actual EPC supplier quote [$/W]; leave blank if unknown,"optional for physics, required for switching economics"
+source_url,Manufacturer datasheet/warranty evidence URL,required
+evidence_status,manufacturer_datasheet/user_supplied/verified,required
+source_note,Version/applicability notes,required

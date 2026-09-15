@@ -1,0 +1,52 @@
+{
+  "version": "taxonomy-1",
+  "groups": [
+    {
+      "name": "PERC",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "TOPCon",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "HJT / SHJ",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "CdTe",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "HPBC",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "IBC",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "TOPCon Bifacial",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "HJT Bifacial",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "ABC",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "CIGS",
+      "decision_status": "SKU_EVIDENCE_REQUIRED"
+    },
+    {
+      "name": "Perovskite–silicon tandem",
+      "commercial_status": "LIMITED_COMMERCIAL",
+      "decision_status": "EVIDENCE_GATED",
+      "source_url": "https://www.oxfordpv.com/intersolar-2026",
+      "note": "No verified exact procurable SKU and electrical inputs in this release. No selectable placeholder."
+    }
+  ]
+}
