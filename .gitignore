@@ -7,3 +7,4 @@ outputs/*.png
 .test-*/
 *.bak
 preview.*.log
+.admin-password-hash

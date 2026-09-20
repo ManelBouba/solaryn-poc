@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+from auth_helpers import admin_client
 
 from foundation import catalog, create_app
 from performance_service import Configuration, AC, Lifetime, calculate, ac_output, lifetime_rows, rank, digest
@@ -147,7 +147,7 @@ def test_configuration_rejects_missing_dependencies_or_invalid_assumptions(chang
 def test_api_immutable_completion_freezes_inputs_and_survives_restart(tmp_path):
     def fetch(provider, params): return json.dumps(fixture(provider)).encode()
     db = tmp_path/'runs.sqlite3'
-    client = TestClient(create_app(db, climate_fetcher=fetch))
+    client = admin_client(db, climate_fetcher=fetch)
     site = client.post('/api/v1/sites',json={'latitude':0,'longitude':0}).json()
     mids = [m['module_id'] for m in catalog()['modules'][:4]]
     old = client.post('/api/v1/analyses',json={'site_id':site['id'],'module_ids':mids}).json()
@@ -162,7 +162,7 @@ def test_api_immutable_completion_freezes_inputs_and_survives_restart(tmp_path):
     assert len(result['frozen_inputs']['source']['hourly']) == 8760
     assert result['climate_snapshot']['id'] == climate['id']
     assert client.get(f"/api/v1/analyses/{pending['id']}").json() == pending
-    restarted = TestClient(create_app(db, climate_fetcher=fetch))
+    restarted = admin_client(db, climate_fetcher=fetch)
     assert restarted.get(f"/api/v1/analyses/{result['id']}/export").json() == result
     rerun = restarted.post(f"/api/v1/analyses/{result['id']}/run",json=config()).json()
     assert rerun['decision'] == result['decision']

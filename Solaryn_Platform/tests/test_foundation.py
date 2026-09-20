@@ -2,14 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_helpers import admin_client
 
 from foundation import create_app, catalog
 
 
 @pytest.fixture
 def client(tmp_path):
-    return TestClient(create_app(tmp_path / "foundation.sqlite3"))
+    return admin_client(tmp_path / "foundation.sqlite3")
 
 
 @pytest.mark.parametrize("latitude,longitude", [(90, 180), (-90, -180), (0, 0), (-12.123456789, 67.987654321)])
@@ -35,7 +35,7 @@ def test_invalid_coordinates_rejected(client, payload):
 
 def test_persisted_request_has_no_fake_science_and_is_immutable(tmp_path):
     db = tmp_path / 'persistent.sqlite3'
-    c = TestClient(create_app(db))
+    c = admin_client(db)
     site = c.post('/api/v1/sites', json=dict(latitude=0.1234, longitude=-78.4321)).json()
     ids = [m['module_id'] for m in catalog()['modules'][:3]]
     payload = dict(site_id=site['id'], module_ids=ids)
@@ -49,7 +49,7 @@ def test_persisted_request_has_no_fake_science_and_is_immutable(tmp_path):
     assert len(result['selected_modules']) == 3
     assert c.post('/api/v1/analyses', json=payload).json()['id'] != result['id']
     assert c.put('/api/v1/analyses/' + result['id'], json={}).status_code == 405
-    restarted = TestClient(create_app(db))
+    restarted = admin_client(db)
     assert restarted.get('/api/v1/analyses/' + result['id']).json() == result
     exported = restarted.get('/api/v1/analyses/' + result['id'] + '/export')
     assert exported.json() == result

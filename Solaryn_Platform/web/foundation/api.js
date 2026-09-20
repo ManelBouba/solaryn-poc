@@ -3,6 +3,10 @@
 export async function request(path, options = {}) {
   const response = await fetch(`/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
   const body = await response.json();
+  if (response.status === 401 && !path.startsWith('/auth/')) {
+    window.location.assign('/login');
+    throw new Error('Your session has expired. Please sign in again.');
+  }
   if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : Array.isArray(body.detail) ? body.detail.map(item => item.msg).join('; ') : 'The request is invalid. Check your inputs and try again.');
   return body;
 }

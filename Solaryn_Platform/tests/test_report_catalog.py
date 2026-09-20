@@ -8,7 +8,7 @@ import zipfile
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
+from auth_helpers import admin_client
 
 from catalog_service import catalog, families
 from electrical_router import power
@@ -132,7 +132,7 @@ def test_omitted_scenarios_and_injection_escaping():
 
 def test_download_routes_preserve_completed_record(tmp_path):
     def fetch(provider,params):return json.dumps(fixture(provider)).encode()
-    c=TestClient(create_app(tmp_path/'runs.db',climate_fetcher=fetch))
+    c=admin_client(tmp_path/'runs.db',climate_fetcher=fetch)
     site=c.post('/api/v1/sites',json={'latitude':0,'longitude':0}).json()
     c.post(f'/api/v1/sites/{site["id"]}/climate-snapshot',json={'year':2023})
     pending=c.post('/api/v1/analyses',json={'site_id':site['id'],'module_ids':[m['module_id'] for m in catalog()['modules'][:3]]}).json()

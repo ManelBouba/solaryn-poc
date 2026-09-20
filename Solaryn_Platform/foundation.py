@@ -9,6 +9,7 @@ import sqlite3
 import requests
 from typing import Literal
 from uuid import uuid4
+from foundation_auth import install_admin_auth
 from climate_service import ClimateService, DEFAULT_YEAR, empty_snapshot
 from performance_v2 import Configuration, calculate
 from catalog_service import catalog, families as catalog_families
@@ -340,12 +341,13 @@ def create_app(db_path=None, climate_fetcher=None):
         return Response(body, media_type="application/zip", headers={"Content-Disposition":
             f'attachment; filename="SOLARYN-{result["id"]}-evidence.zip"'})
 
+    install_admin_auth(app, db_path)
     app.mount("/assets", StaticFiles(directory=WEB), name="assets")
     app.mount("/brand", StaticFiles(directory=ROOT.parent / "frontend/public/brand"), name="brand")
 
     @app.get("/{route:path}", include_in_schema=False)
     def page(route: str):
-        if route not in {"", "site", "conditions", "candidates", "processing", "economics", "results", "evidence"}:
+        if route not in {"", "login", "profile", "site", "conditions", "candidates", "processing", "economics", "results", "evidence"}:
             raise HTTPException(404, "Page not found")
         return FileResponse(WEB / "index.html")
 

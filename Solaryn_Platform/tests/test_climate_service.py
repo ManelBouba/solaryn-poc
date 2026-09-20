@@ -5,7 +5,7 @@ import hashlib
 import json
 
 import pytest
-from fastapi.testclient import TestClient
+from auth_helpers import admin_client
 
 from climate_service import ClimateService, normalize
 from foundation import create_app
@@ -82,7 +82,7 @@ def test_cached_sources_raw_hashes_crosscheck_and_frozen_analysis(tmp_path):
         calls.append((provider, query))
         return raw[provider]
     path = tmp_path / 'climate.sqlite3'
-    c = TestClient(create_app(path, climate_fetcher=fetch))
+    c = admin_client(path, climate_fetcher=fetch)
     site = c.post('/api/v1/sites',json={'latitude':-11.23456789,'longitude':22.987654321}).json()
     url = f"/api/v1/sites/{site['id']}/climate-snapshot"
     assert c.get(url).json()['status'] == 'NOT_REQUESTED'
@@ -114,7 +114,7 @@ def test_cached_sources_raw_hashes_crosscheck_and_frozen_analysis(tmp_path):
         hourly = c.get('/api/v1/climate-sources/'+p['source_id']+'/export').json()
         assert len(hourly['hourly']) == 8760
         assert hourly['canonical_units']['ghi_w_m2'] == 'W/m²'
-    restarted = TestClient(create_app(path, climate_fetcher=fetch))
+    restarted = admin_client(path, climate_fetcher=fetch)
     assert restarted.get(url).json()['id'] != first['id']
     assert restarted.get('/api/v1/climate-sources/'+first['providers'][0]['source_id']+'/export').status_code == 200
     assert c.post(url,json={'year':1900}).status_code == 422

@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api, request } from './api.js?v=admin1';
 import { SolarynLogo } from './logo.js';
 
 const root = document.querySelector('#app');
@@ -19,6 +19,7 @@ const routeTitles = {
 };
 
 let site = null;
+let adminProfile = null;
 let climate = null;
 let catalog = null;
 let families = [];
@@ -136,6 +137,7 @@ function stageNav() {
 function headerActions() {
   const ranked = Boolean(analysis?.decision?.ranking?.length);
   return `<div class="header-actions">
+    ${adminProfile ? `<a class="account-link" href="/profile">Admin profile</a><button class="share-button" id="logout" type="button">Log out</button>` : '<a class="account-link" href="/login">Admin login</a>'}
     ${analysis ? `<a class="text-action" href="/api/v1/analyses/${encodeURIComponent(analysis.id)}/export" download>Export</a>` : ''}
     ${ranked ? `<a class="text-action" href="/api/v1/analyses/${encodeURIComponent(analysis.id)}/report?inline=true" target="_blank" rel="noopener">Report</a>` : ''}
     ${(site || analysis) ? `<a class="text-action" href="${link('evidence')}">Evidence</a>` : ''}
@@ -151,7 +153,7 @@ function shell(content) {
       <div class="workspace-location" ${site ? '' : 'hidden'}><span class="location-kicker">Selected site</span><strong data-place-label>${esc(selectedLabel)}</strong><small data-coordinate-label>${esc(coords(site))}</small></div>
       ${headerActions()}
     </header>
-    ${route() && route() !== 'evidence' ? stageNav() : ''}
+    ${adminProfile && route() && !['evidence', 'login', 'profile'].includes(route()) ? stageNav() : ''}
     <main id="main" tabindex="-1">${content}<div id="error" role="alert"></div></main>
     <footer><span>SOLARYN · Climate-aware PV decision intelligence</span><span>Research prototype · Export reports to keep your results</span></footer>`;
   document.querySelector('#share-prototype').onclick = async () => {
@@ -168,6 +170,38 @@ function shell(content) {
       document.querySelector('#main').prepend(hint);
     }
   };
+  const logout = document.querySelector('#logout');
+  if (logout) logout.onclick = () => action(async () => {
+    await request('/auth/logout', { method: 'POST' });
+    writeKey('site', null); writeKey('analysis', null);
+    site = null; analysis = null; selected.clear(); adminProfile = null;
+    location.assign('/');
+  });
+}
+
+function loginPage() {
+  return `<section class="auth-layout"><div class="auth-intro"><div class="eyebrow">SOLARYN / ADMIN ACCESS</div><h1>Your analysis<br>workspace.</h1><p>Sign in as the administrator to select sites, compare modules and review the evidence behind every decision.</p><div class="notice">Visitors can explore the homepage. Analysis tools and saved results are reserved for the admin.</div><a class="text-link" href="/">← Back to the homepage</a></div><section class="platform-card auth-card"><span class="auth-icon" aria-hidden="true">↗</span><h2>Admin login</h2><p>Enter your administrator credentials.</p><form id="login-form"><label for="username">Username</label><input id="username" name="username" autocomplete="username" required maxlength="128" autofocus><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256"><label class="show-password"><input id="show-password" type="checkbox">Show password</label><div id="login-error" role="alert"></div><button class="button" type="submit">Sign in to analysis →</button></form><small>Admin-only workspace · No public registration</small></section></section>`;
+}
+
+function bindLogin() {
+  document.querySelector('#show-password').onchange = e => { document.querySelector('#password').type = e.target.checked ? 'text' : 'password'; };
+  document.querySelector('#login-form').onsubmit = async e => {
+    e.preventDefault();
+    const submit = e.target.querySelector('button');
+    const status = document.querySelector('#login-error');
+    submit.disabled = true; submit.textContent = 'Signing in…'; status.textContent = '';
+    try {
+      await request('/auth/login', { method: 'POST', body: JSON.stringify({username: e.target.username.value.trim(), password: e.target.password.value}) });
+      location.assign('/site');
+    } catch (err) {
+      status.textContent = err.message;
+      submit.disabled = false; submit.textContent = 'Sign in to analysis →';
+    }
+  };
+}
+
+function profilePage() {
+  return `${heading('ADMIN PROFILE', 'Your workspace access.', 'Manage analyses with your administrator profile.')}<section class="platform-card auth-card profile-card"><span class="profile-avatar">A</span><h2>${esc(adminProfile.name)}</h2>${badge('Admin', 'success')}<dl class="data-list"><dt>Username</dt><dd>${esc(adminProfile.username)}</dd><dt>Access</dt><dd>All analysis tools, saved results and exports</dd><dt>Session</dt><dd>Expires eight hours after login</dd></dl>${button('Open analysis workspace', 'site')}<p class="small">Public visitors can view the homepage only. Use Log out when you finish.</p></section>`;
 }
 
 function error(message) {
@@ -243,6 +277,21 @@ async function render() {
   if (map) { map.remove(); map = null; marker = null; }
   shell('<div class="loading"><div class="loading-bar"></div><span>Loading SOLARYN workspace…</span></div>');
   try {
+    const session = await request('/auth/session');
+    if (ticket !== generation) return;
+    adminProfile = session.authenticated ? session.profile : null;
+    if (!adminProfile) {
+      site = null; analysis = null; climate = null; selected.clear();
+      if (route()) {
+        if (route() !== 'login') history.replaceState({}, '', '/login');
+        shell(loginPage()); bindLogin(); document.title = 'SOLARYN · Admin login';
+      } else {
+        shell(home([])); setupMap(false); document.title = 'SOLARYN · Overview';
+      }
+      return;
+    }
+    if (route() === 'login') history.replaceState({}, '', '/profile');
+    if (route() === 'profile') { shell(profilePage()); document.title = 'SOLARYN · Admin profile'; return; }
     const query = new URLSearchParams(location.search);
     const sid = query.get('site') || readKey('site');
     const aid = query.get('analysis') || readKey('analysis');
@@ -307,12 +356,12 @@ async function render() {
 
 function home(recent) {
   return `<section class="platform-hero">
-    <div class="hero-copy"><div class="eyebrow"><span class="yellow-line"></span> SOLAR DECISIONS, GROUNDED IN EVIDENCE</div><h1>The right solar module.<br><span>For your site.</span></h1><p>Explore your site's climate, compare real PV modules, and understand the trade-offs behind every recommendation.</p>${button('Start a site analysis', 'site')}<div class="hero-note">Choose a location. Compare modules. Explore the evidence.</div><div class="prototype-note">Research prototype · Recommendations remain provisional.</div></div>
+    <div class="hero-copy"><div class="eyebrow"><span class="yellow-line"></span> SOLAR DECISIONS, GROUNDED IN EVIDENCE</div><h1>The right solar module.<br><span>For your site.</span></h1><p>Explore your site's climate, compare real PV modules, and understand the trade-offs behind every recommendation.</p>${button(adminProfile ? 'Start a site analysis' : 'Sign in to start analysis', adminProfile ? 'site' : 'login')}<div class="hero-note">Choose a location. Compare modules. Explore the evidence.</div><div class="prototype-note">Research prototype · Recommendations remain provisional.</div></div>
     <div class="hero-map platform-card"><div class="card-header"><span>Global site explorer</span><small>WGS84 coordinates</small></div><div id="map" aria-label="World map preview"></div><div class="map-caption"><span class="crosshair">⊕</span><div><strong>Every decision starts with the site.</strong><span>Select any coordinate; no predefined city list.</span></div></div></div>
   </section>
   <section class="engine-overview">${stageDefs.map(s => `<div><span>${s.n}</span><strong>${esc(s.name)}</strong></div>`).join('<b>→</b>')}</section>
   <section class="recent"><div class="section-title"><div><span class="eyebrow">EXPLORE THE WORKFLOW</span><h2>From location to a transparent decision</h2></div></div><div class="intro-grid"><article><span>01 / LOCATE</span><h3>Start anywhere</h3><p>Pick a point on the map or enter exact coordinates for your project.</p></article><article><span>02 / COMPARE</span><h3>Let the evidence lead</h3><p>Compare module-specific performance using climate data and declared assumptions.</p></article><article><span>03 / UNDERSTAND</span><h3>See why it matters</h3><p>Explore performance, optional economics, and the limits of each result.</p></article></div></section>
-  <section class="recent"><div class="section-title"><div><span class="eyebrow">SHARED DEMO WORKSPACE</span><h2>Recent sites</h2></div><span>Demo records may reset · Export results to keep them</span></div>${recent.length ? `<div class="recent-grid">${recent.slice(0, 3).map(s => `<a class="recent-card" href="/conditions?site=${encodeURIComponent(s.id)}"><span class="eyebrow">SAVED SITE</span><strong>${esc(readPlace(s.latitude, s.longitude) || coords(s))}</strong><span>${esc(coords(s))}</span><small>${esc(s.created_at.slice(0, 10))}</small></a>`).join('')}</div>` : '<div class="empty-inline">Your next solar decision starts here. Select a site to begin.</div>'}</section>`;
+  ${adminProfile ? `<section class="recent"><div class="section-title"><div><span class="eyebrow">ADMIN WORKSPACE</span><h2>Recent sites</h2></div><span>Demo records may reset · Export results to keep them</span></div>${recent.length ? `<div class="recent-grid">${recent.slice(0, 3).map(s => `<a class="recent-card" href="/conditions?site=${encodeURIComponent(s.id)}"><span class="eyebrow">SAVED SITE</span><strong>${esc(readPlace(s.latitude, s.longitude) || coords(s))}</strong><span>${esc(coords(s))}</span><small>${esc(s.created_at.slice(0, 10))}</small></a>`).join('')}</div>` : '<div class="empty-inline">Your next solar decision starts here. Select a site to begin.</div>'}</section>` : '<section class="visitor-access"><strong>Analysis access is reserved for the admin.</strong><span>Explore SOLARYN here, or sign in to open the workspace.</span><a class="text-link" href="/login">Admin login →</a></section>'}`;
 }
 
 function siteAssumptionsSummary() {
