@@ -341,6 +341,10 @@ def candidate_plane_of_array(
     height = float(cfg.get("height_m", 1.5))
     pitch = float(cfg.get("pitch_m", 5.0))
     albedo = float(cfg.get("albedo", 0.20))
+    albedo_input = (
+        pd.to_numeric(weather["surface_albedo"], errors="coerce").fillna(albedo).clip(0.0, 1.0)
+        if "surface_albedo" in weather.columns else albedo
+    )
     rear_structure_loss_pct = float(cfg.get("rear_structure_loss_pct", 2.0))
     if not (0.02 <= gcr <= 0.95):
         raise ValueError("Array GCR must be between 0.02 and 0.95.")
@@ -405,7 +409,7 @@ def candidate_plane_of_array(
         ghi=ghi,
         dhi=dhi,
         dni=dni,
-        albedo=albedo,
+        albedo=albedo_input,
         model="haydavies",
         dni_extra=dni_extra,
         iam_front=iam_front,
@@ -686,12 +690,109 @@ def _pmp_for_model(
     }
 
 
+
+def soiling_transmission_factor(
+    weather: pd.DataFrame,
+    constant_loss_pct: float = 2.0,
+    config: dict | None = None,
+) -> tuple[pd.Series, dict]:
+    """Return hourly soiling transmission with an explicit assumption path.
+
+    ``constant`` preserves the declared project scalar. ``kimber`` uses pvlib's
+    rainfall-driven Kimber model only when the project supplies the rate and cleaning
+    threshold; SOLARYN never infers a technology- or location-specific soiling rate.
+    """
+    cfg = dict(config or {})
+    mode = str(cfg.get("mode", "constant")).strip().lower()
+    if mode == "constant":
+        loss = max(0.0, min(100.0, float(constant_loss_pct))) / 100.0
+        return pd.Series(1.0 - loss, index=weather.index, dtype=float), {
+            "soiling_model": "constant_project_loss",
+            "soiling_loss_pct": loss * 100.0,
+            "soiling_model_applied": True,
+            "soiling_basis": "declared_project_scalar_not_site_inferred",
+        }
+    if mode != "kimber":
+        raise ValueError("soiling model must be 'constant' or 'kimber'.")
+    require_pvlib()
+    if "rainfall_mm_hour" not in weather.columns or "time_utc" not in weather.columns:
+        raise ValueError("Kimber soiling requires hourly rainfall and UTC timestamps.")
+    if "soiling_loss_rate_per_day" not in cfg or "cleaning_threshold_mm" not in cfg:
+        raise ValueError("Kimber soiling requires explicit soiling_loss_rate_per_day and cleaning_threshold_mm.")
+    rate = float(cfg["soiling_loss_rate_per_day"]); threshold = float(cfg["cleaning_threshold_mm"])
+    if not np.isfinite(rate) or rate < 0 or rate > 0.1:
+        raise ValueError("soiling_loss_rate_per_day must be in [0, 0.1].")
+    if not np.isfinite(threshold) or threshold <= 0 or threshold > 100:
+        raise ValueError("cleaning_threshold_mm must be in (0, 100].")
+    max_soiling = float(cfg.get("max_soiling_fraction", 0.30))
+    grace = int(cfg.get("grace_period_days", 14))
+    if not 0 <= max_soiling <= 1 or grace < 0:
+        raise ValueError("Kimber max_soiling_fraction/grace_period_days are invalid.")
+    times = pd.DatetimeIndex(pd.to_datetime(weather["time_utc"], utc=True))
+    rain = pd.Series(
+        pd.to_numeric(weather["rainfall_mm_hour"], errors="coerce").fillna(0.0).clip(lower=0.0).to_numpy(),
+        index=times,
+    )
+    loss = pvlib.soiling.kimber(
+        rain, cleaning_threshold=threshold, soiling_loss_rate=rate,
+        grace_period=grace, max_soiling=max_soiling,
+    )
+    loss = pd.Series(np.asarray(loss, dtype=float), index=weather.index).fillna(0.0).clip(0.0, 1.0)
+    return 1.0 - loss, {
+        "soiling_model": "pvlib_kimber",
+        "soiling_model_applied": True,
+        "soiling_loss_rate_per_day": rate,
+        "cleaning_threshold_mm": threshold,
+        "mean_soiling_loss_pct": float(loss.mean() * 100.0),
+        "max_soiling_loss_pct": float(loss.max() * 100.0),
+        "soiling_basis": "user_declared_Kimber_parameters_plus_hourly_rainfall",
+    }
+
+def snow_transmission_factor(weather: pd.DataFrame, row: pd.Series, enabled: bool = True) -> tuple[pd.Series, dict]:
+    """Return DC transmission after snow using pvlib/NREL when direct snow data exist.
+
+    Generic precipitation is never silently relabeled as snowfall. If ``snowfall_cm``
+    is absent or entirely missing the factor is neutral and the diagnostic says why.
+    """
+    neutral = pd.Series(1.0, index=weather.index, dtype=float)
+    diag = {"snow_model_applied": False, "snow_model_basis": "disabled_or_no_direct_snowfall_data",
+            "mean_snow_coverage_fraction": 0.0, "annual_snow_loss_pct_proxy": 0.0}
+    if not enabled or pvlib is None or "snowfall_cm" not in weather.columns:
+        return neutral, diag
+    snowfall = pd.to_numeric(weather["snowfall_cm"], errors="coerce")
+    if snowfall.notna().sum() == 0:
+        return neutral, diag
+    poa = pd.to_numeric(weather.get("poa_w_m2", 0.0), errors="coerce").fillna(0.0).clip(lower=0.0)
+    ta = pd.to_numeric(weather.get("temp_air_c", 0.0), errors="coerce").fillna(0.0)
+    tilt = float(pd.to_numeric(weather.get("surface_tilt_deg", pd.Series([30.0])), errors="coerce").dropna().iloc[0])
+    depth = None
+    if "snow_depth_cm" in weather.columns:
+        sd = pd.to_numeric(weather["snow_depth_cm"], errors="coerce")
+        if sd.notna().any(): depth = sd.fillna(0.0).clip(lower=0.0)
+    coverage = pd.Series(pvlib.snow.coverage_nrel(
+        snowfall=snowfall.fillna(0.0).clip(lower=0.0), poa_irradiance=poa, temp_air=ta,
+        surface_tilt=tilt, snow_depth=depth
+    ), index=weather.index, dtype=float).fillna(0.0).clip(0.0, 1.0)
+    raw_num_strings = row.get("snow_num_strings", 1)
+    try: num_strings = max(1, int(float(raw_num_strings)))
+    except Exception: num_strings = 1
+    loss = pd.Series(pvlib.snow.dc_loss_nrel(coverage, num_strings=num_strings), index=weather.index, dtype=float).fillna(0.0).clip(0.0, 1.0)
+    transmission = 1.0 - loss
+    weights = pd.to_numeric(weather.get("days_weight", 1.0), errors="coerce").fillna(1.0)
+    weighted_loss = float((loss * weights).sum() / max(weights.sum(), 1e-12) * 100.0)
+    diag = {"snow_model_applied": True, "snow_model_basis": "pvlib/NREL coverage_nrel + dc_loss_nrel using direct snowfall input",
+            "snow_num_strings": num_strings, "mean_snow_coverage_fraction": float(coverage.mean()),
+            "annual_snow_loss_pct_proxy": weighted_loss}
+    return transmission, diag
+
+
 def simulate_module_hourly(
     weather: pd.DataFrame,
     row: pd.Series,
     common_soiling_loss_pct: float = 2.0,
     root: str | Path | None = None,
     bifacial_config: dict | None = None,
+    soiling_config: dict | None = None,
 ) -> tuple[dict, pd.DataFrame]:
     """Simulate one commercial module without technology-score shortcuts.
 
@@ -707,7 +808,9 @@ def simulate_module_hourly(
     spectral_policy = spectral_evidence_policy(row)
     thermal_policy = thermal_evidence_policy(row)
 
-    soiling_ratio = 1.0 - max(0.0, min(100.0, float(common_soiling_loss_pct))) / 100.0
+    soiling_ratio, soiling_diag = soiling_transmission_factor(
+        weather, common_soiling_loss_pct, config=soiling_config
+    )
     poa_candidate = candidate_plane_of_array(weather, row, bifacial_config=bifacial_config)
     poa_raw = poa_candidate["front_reference_w_m2"]
     poa_optical = poa_candidate["front_optical_w_m2"]
@@ -723,9 +826,12 @@ def simulate_module_hourly(
         temp_module if model_policy["electrical_model"] == "iec61853_module_specific_matrix" else temp_cell
     )
 
-    effective_broadband = (poa_effective * soiling_ratio).clip(lower=0.0)
-    effective_front_only = (poa_optical * soiling_ratio).clip(lower=0.0)
-    effective_spectral_proxy = (poa_effective * spectrum * soiling_ratio).clip(lower=0.0)
+    snow_factor, snow_diag = snow_transmission_factor(
+        weather, row, enabled=bool((bifacial_config or {}).get("snow_model_enabled", True))
+    )
+    effective_broadband = (poa_effective * soiling_ratio * snow_factor).clip(lower=0.0)
+    effective_front_only = (poa_optical * soiling_ratio * snow_factor).clip(lower=0.0)
+    effective_spectral_proxy = (poa_effective * spectrum * soiling_ratio * snow_factor).clip(lower=0.0)
 
     daylight = pd.to_numeric(weather["poa_w_m2"], errors="coerce") > 20
     if daylight.any() and (not np.isfinite(effective_broadband[daylight]).all() or not np.isfinite(electrical_temperature[daylight]).all()):
@@ -834,8 +940,14 @@ def simulate_module_hourly(
         "spectral_effect_pct": ((spectral_yield / broadband_yield - 1.0) * 100.0 if broadband_yield > 0 else np.nan),
         "avg_module_temperature_c_daylight": float(temp_module[daylight].mean()) if daylight.any() else np.nan,
         "p95_module_temperature_c_daylight": float(temp_module[daylight].quantile(0.95)) if daylight.any() else np.nan,
+        "p98_module_temperature_c_daylight": float(temp_module[daylight].quantile(0.98)) if daylight.any() else np.nan,
+        # IEC TS 63126 defines T98 as the 98th-percentile module temperature (175.2 h/year).
+        # Do not silently add an irradiance/daylight filter that is not established by the
+        # public IEC definition. Keep the daylight statistic above for diagnostics only.
+        "p98_module_temperature_c_all_hours": float(temp_module.dropna().quantile(0.98)) if temp_module.notna().any() else np.nan,
         "avg_cell_temperature_c_daylight": float(temp_cell[daylight].mean()) if daylight.any() else np.nan,
         "p95_cell_temperature_c_daylight": float(temp_cell[daylight].quantile(0.95)) if daylight.any() else np.nan,
+        "p98_cell_temperature_c_daylight": float(temp_cell[daylight].quantile(0.98)) if daylight.any() else np.nan,
         "max_cell_temperature_c": float(temp_cell.max()),
         "mean_spectral_factor_daylight": float(spectrum[daylight].mean()) if daylight.any() else 1.0,
         "electrical_model": model_policy["electrical_model"],
@@ -853,8 +965,11 @@ def simulate_module_hourly(
         "spectral_proxy_fallback_policy": spectrum.attrs.get("spectral_proxy_fallback_policy", "none"),
         "decision_spectral_basis": decision_spectral_basis,
         "exploratory_electrical_model_failure": exploratory_model_failure,
-        "soiling_basis": "common_site_assumption_no_technology_score",
-        "soiling_loss_pct": float(common_soiling_loss_pct),
+        "soiling_basis": soiling_diag.get("soiling_basis"),
+        "soiling_model": soiling_diag.get("soiling_model"),
+        "soiling_loss_pct": soiling_diag.get("soiling_loss_pct", soiling_diag.get("mean_soiling_loss_pct")),
+        "mean_soiling_loss_pct": soiling_diag.get("mean_soiling_loss_pct", soiling_diag.get("soiling_loss_pct")),
+        **snow_diag,
         "thermal_model": thermal_policy["thermal_model"],
         "thermal_evidence_level": thermal_policy["thermal_evidence_level"],
         **model_diag,
@@ -883,6 +998,8 @@ def simulate_module_hourly(
     hourly["rear_optical_poa_w_m2"] = poa_candidate["rear_optical_w_m2"]
     hourly["rear_equivalent_poa_w_m2"] = poa_candidate["rear_equivalent_w_m2"]
     hourly["effective_electrical_poa_w_m2"] = poa_effective
+    hourly["soiling_transmission_factor"] = soiling_ratio
+    hourly["snow_transmission_factor"] = snow_factor
     hourly["effective_irradiance_broadband_w_m2"] = effective_broadband
     hourly["effective_irradiance_spectral_proxy_w_m2"] = effective_spectral_proxy
     hourly["effective_irradiance_w_m2"] = effective_broadband

@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pvlib
+try:
+    import pvlib
+except ImportError:  # allow evidence/decision tests without optional physics runtime
+    pvlib = None
+
+
+def require_pvlib() -> None:
+    if pvlib is None:
+        raise ImportError(
+            "Hourly SOLARYN physics requires pvlib. Install project requirements before running live simulations."
+        )
+
 
 
 def default_fixed_tilt_geometry(latitude: float, tilt_deg: float | None = None, azimuth_deg: float | None = None) -> tuple[float, float]:
@@ -49,6 +60,7 @@ def nasa_hourly_to_pvlib_weather(
     tilt_deg: float | None = None,
     azimuth_deg: float | None = None,
     albedo: float = 0.20,
+    snow_albedo: float | None = None,
 ) -> pd.DataFrame:
     """Convert true NASA POWER hourly data to a pvlib-ready weather table.
 
@@ -57,6 +69,7 @@ def nasa_hourly_to_pvlib_weather(
     pressure-adjusted air mass so supported technology families can receive a
     documented first-order spectral mismatch correction.
     """
+    require_pvlib()
     if nasa_hourly.empty:
         raise ValueError("NASA POWER hourly dataframe is empty.")
     if "time_utc" not in nasa_hourly.columns:
@@ -140,6 +153,28 @@ def nasa_hourly_to_pvlib_weather(
         1.0 + 0.08 * np.maximum(0.0, 2.0 - airmass_relative.fillna(10.0))
     )
 
+    # Optional project/provider snow inputs. SOLARYN does not convert generic rain to
+    # snowfall silently. When direct snowfall/depth inputs are absent the snow-loss
+    # model remains disabled and the climate layer reports only a snow-potential proxy.
+    snowfall_cm = _series(df, "SNOWFALL_CM", times) if "SNOWFALL_CM" in df.columns else pd.Series(np.nan, index=times, dtype=float)
+    snow_depth_cm = _series(df, "SNOW_DEPTH_CM", times) if "SNOW_DEPTH_CM" in df.columns else pd.Series(np.nan, index=times, dtype=float)
+    if "SURFACE_ALBEDO" in df.columns:
+        surface_albedo = _series(df, "SURFACE_ALBEDO", times).clip(0.0, 1.0)
+        albedo_basis = "provider_or_project_time_series"
+    else:
+        surface_albedo = pd.Series(float(albedo), index=times, dtype=float)
+        albedo_basis = "project_baseline_constant"
+        # Snow albedo is never invented. If the project explicitly supplies a snow
+        # albedo and direct snow-depth data are available, transition from baseline
+        # albedo to that declared value over the first 5 cm of ground snow depth.
+        if snow_albedo is not None and snow_depth_cm.notna().any():
+            snow_alb = float(snow_albedo)
+            if not 0.0 <= snow_alb <= 1.0:
+                raise ValueError("snow_albedo must be between 0 and 1.")
+            depth_factor = (snow_depth_cm.fillna(0.0).clip(lower=0.0) / 5.0).clip(0.0, 1.0)
+            surface_albedo = surface_albedo + (snow_alb - surface_albedo) * depth_factor
+            albedo_basis = "project_declared_snow_albedo_scaled_by_direct_snow_depth"
+
     n_years = max(int(pd.Index(times.year).nunique()), 1)
     annual_weight = 1.0 / float(n_years)
     weather = pd.DataFrame({
@@ -169,7 +204,11 @@ def nasa_hourly_to_pvlib_weather(
         "temp_cell_is_measured": False, "temp_cell_source": "pvlib SAPM open-rack modeled cell temperature",
         "wind_speed_m_s": wind.to_numpy(), "relative_humidity": (rh / 100.0).to_numpy(),
         "relative_humidity_pct": rh.to_numpy(), "rainfall_mm_hour": rain_hour.to_numpy(),
-        "rainfall_mm_day": rainfall_mm_day.to_numpy(), "aod_55": np.nan,
+        "rainfall_mm_day": rainfall_mm_day.to_numpy(),
+        "snowfall_cm": snowfall_cm.to_numpy(), "snow_depth_cm": snow_depth_cm.to_numpy(),
+        "surface_albedo": surface_albedo.clip(lower=0.0, upper=1.0).to_numpy(),
+        "surface_albedo_basis": albedo_basis,
+        "aod_55": np.nan,
         "uv_index_proxy": pd.Series(uv_proxy, index=times).fillna(0).to_numpy(),
     })
     return weather.reset_index(drop=True)

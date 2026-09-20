@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import requests
 from typing import Literal
 from uuid import uuid4
 from climate_service import ClimateService, DEFAULT_YEAR, empty_snapshot
@@ -168,6 +169,37 @@ def create_app(db_path=None, climate_fetcher=None):
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         return response
 
+    @app.get("/api/v1/geocode/reverse")
+    def reverse_geocode(lat: float, lon: float):
+        """Resolve a presentation-only place label without changing the scientific coordinate."""
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise HTTPException(422, "Invalid WGS84 coordinate")
+        try:
+            response = requests.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 10, "addressdetails": 1, "accept-language": "en"},
+                headers={"User-Agent": "SOLARYN-PoC/0.1 (reverse-geocoding presentation metadata)"},
+                timeout=(5, 12),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            address = payload.get("address") or {}
+            locality = (address.get("city") or address.get("town") or address.get("village") or
+                        address.get("municipality") or address.get("county") or
+                        address.get("state_district") or address.get("state"))
+            country = address.get("country")
+            if locality and country:
+                label = f"{locality}, {country}"
+            elif locality:
+                label = locality
+            elif country and payload.get("display_name"):
+                label = f"{payload['display_name'].split(',')[0]}, {country}"
+            else:
+                label = (payload.get("display_name") or "").split(",")[0] or None
+            return {"label": label, "source": "OpenStreetMap Nominatim", "status": "AVAILABLE" if label else "UNAVAILABLE"}
+        except (requests.RequestException, ValueError, TypeError, KeyError):
+            return {"label": None, "source": "OpenStreetMap Nominatim", "status": "UNAVAILABLE"}
+
     @app.get("/api/v1/health")
     def health():
         return {"status": "ok", "version": "0.3.0", "climate": "PVGIS + NASA_POWER", "science": "PROVISIONAL_DATASHEET_SCREENING"}
@@ -313,7 +345,7 @@ def create_app(db_path=None, climate_fetcher=None):
 
     @app.get("/{route:path}", include_in_schema=False)
     def page(route: str):
-        if route not in {"", "site", "conditions", "candidates", "processing", "results", "evidence"}:
+        if route not in {"", "site", "conditions", "candidates", "processing", "economics", "results", "evidence"}:
             raise HTTPException(404, "Page not found")
         return FileResponse(WEB / "index.html")
 

@@ -3,3 +3,7 @@ __pycache__/
 .venv/
 .env
 outputs/*.png
+.pytest_cache/
+.test-*/
+*.bak
+preview.*.log

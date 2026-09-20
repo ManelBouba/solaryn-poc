@@ -104,7 +104,10 @@ def execute(request, folder):
                  tilt_deg=configuration["tilt_deg"],azimuth_deg=configuration["azimuth_deg"],
                  soiling_loss_pct=configuration["soiling_pct"],common_degradation_pct_year=configuration["degradation"]*100,
                  row_geometry_enabled=configuration["row_geometry"],albedo=configuration["albedo"],
-                 gcr=configuration["gcr"],row_height_m=configuration["height_m"],row_pitch_m=configuration["pitch_m"])
+                 gcr=configuration["gcr"],row_height_m=configuration["height_m"],row_pitch_m=configuration["pitch_m"],
+                 salinity_stress=configuration.get("salinity_stress","auto"),
+                 hard_qualification_gates=configuration.get("hard_qualification_gates",False),
+                 snow_model_enabled=configuration.get("snow_model_enabled",True))
     result=analyze(PILOT,project,modules,weather,store_root=folder/'pilot')
     # Do not elevate the original gate based on a cached report alone.
     result["reference_validation"]=validated

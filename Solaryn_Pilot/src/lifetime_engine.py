@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import numpy as np
 import pandas as pd
 from src.input_validation import horizon_years
 
@@ -130,6 +131,91 @@ def lifetime_energy_from_warranty_scenario(
         "basis": "warranty_derived_linear_power_retention_scenario_not_energy_guarantee_or_field_prediction",
     }
 
+
+
+
+def degradation_parameters_for_candidate(
+    module: pd.Series | dict,
+    *,
+    common_mean_pct_year: float = 0.50,
+    common_sigma_pct_year: float = 0.20,
+) -> dict:
+    """Resolve degradation inputs without technology-family assumptions.
+
+    A product-specific mean is used only when a field-validated/measured rate is
+    explicitly recorded. Manufacturer warranty degradation remains a separate
+    sensitivity and never becomes the primary lifetime mean. When no validated field
+    evidence exists, all compared candidates share the same project degradation prior.
+    """
+    m = dict(module)
+    common_mu = float(common_mean_pct_year)
+    common_sd = float(common_sigma_pct_year)
+    if not math.isfinite(common_mu) or common_mu < 0:
+        raise ValueError("common_mean_pct_year must be finite and non-negative.")
+    if not math.isfinite(common_sd) or common_sd < 0:
+        raise ValueError("common_sigma_pct_year must be finite and non-negative.")
+
+    status = str(m.get("degradation_evidence_status", "")).strip().lower()
+    validated = status in {"field_validated", "validated_field", "measured_field", "independent_field"}
+    field_mu = pd.to_numeric(pd.Series([m.get("field_validated_degradation_pct_year")]), errors="coerce").iloc[0]
+    field_sd = pd.to_numeric(pd.Series([m.get("field_validated_degradation_sigma_pct_year")]), errors="coerce").iloc[0]
+
+    if validated and pd.notna(field_mu) and math.isfinite(float(field_mu)) and float(field_mu) >= 0:
+        sigma = float(field_sd) if pd.notna(field_sd) and math.isfinite(float(field_sd)) and float(field_sd) >= 0 else common_sd
+        return {
+            "mean_pct_year": float(field_mu),
+            "sigma_pct_year": sigma,
+            "basis": "product_specific_field_evidence",
+            "evidence_status": status,
+        }
+
+    return {
+        "mean_pct_year": common_mu,
+        "sigma_pct_year": common_sd,
+        "basis": "common_project_prior_shared_across_candidates",
+        "evidence_status": status or "not_provided",
+    }
+
+def lifetime_energy_distribution(
+    annual_yield_kwh_kwp: float,
+    mean_degradation_pct_year: float = 0.50,
+    degradation_sigma_pct_year: float = 0.20,
+    annual_yield_sigma_pct: float = 3.0,
+    years: int = 25,
+    n: int = 5000,
+    seed: int = 95,
+) -> dict:
+    """Screening distribution for lifetime energy without inventing family superiority.
+
+    The degradation mean is a declared project scenario shared across candidates.
+    Evidence quality may change ``degradation_sigma_pct_year`` at the caller, but not
+    the mean. P90 is reported as the 10th percentile (90% exceedance).
+    """
+    annual=float(annual_yield_kwh_kwp); mu=float(mean_degradation_pct_year); sd=float(degradation_sigma_pct_year)
+    if not math.isfinite(annual) or annual < 0: raise ValueError("annual_yield_kwh_kwp must be finite and non-negative")
+    if not math.isfinite(mu) or not 0 <= mu < 20: raise ValueError("mean degradation must be in [0,20) %/yr")
+    if not math.isfinite(sd) or sd < 0: raise ValueError("degradation sigma must be non-negative")
+    if int(n) < 100: raise ValueError("n must be >=100")
+    rng=np.random.default_rng(seed)
+    # Truncated normal at physical non-negative degradation.
+    d=np.maximum(rng.normal(mu, sd, int(n)), 0.0)/100.0
+    cv=max(float(annual_yield_sigma_pct),0.0)/100.0
+    if cv:
+        sig=np.sqrt(np.log1p(cv*cv)); mult=rng.lognormal(-0.5*sig*sig, sig, int(n))
+    else: mult=np.ones(int(n))
+    first=annual*mult
+    yrs=np.arange(int(years), dtype=float)
+    life=(first[:,None] * np.power(1.0-d[:,None], yrs[None,:])).sum(axis=1)
+    return {
+        "p50_lifetime_kwh_kwp": float(np.percentile(life,50)),
+        "p90_lifetime_kwh_kwp": float(np.percentile(life,10)),
+        "mean_lifetime_kwh_kwp": float(life.mean()),
+        "degradation_mean_pct_year": mu,
+        "degradation_sigma_pct_year": sd,
+        "annual_yield_sigma_pct": float(annual_yield_sigma_pct),
+        "n_samples": int(n),
+        "basis": "common degradation prior; evidence changes uncertainty width, not technology mean",
+    }
 
 def add_lifetime_metrics(
     results: pd.DataFrame,

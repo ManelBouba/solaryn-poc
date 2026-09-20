@@ -120,6 +120,9 @@ class PhysicsInput(Input):
     curtailment: float = Field(default=0,ge=0,le=.99)
     degradation: float = Field(default=.005,ge=0,le=.2)
     yield_log_sigma: float | None = Field(default=None,ge=0,le=.5)
+    salinity_stress: Literal['auto','low','moderate','high','coastal'] = 'auto'
+    hard_qualification_gates: bool = False
+    snow_model_enabled: bool = True
     quotes_eur_w: dict[str,float] = Field(default_factory=dict)
 
     @field_validator('quotes_eur_w')

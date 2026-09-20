@@ -1,3 +1,7 @@
+# SOLARYN — Audit-Hardened PoC V6
+
+Latest working PoC release: **6.0.0-audit-hardened**. See `LAST_POC_V6_AUDIT_HARDENED.md` for the scientific changes and test status.
+
 # SOLARYN — map-first platform foundation
 
 The new branded web foundation starts with:

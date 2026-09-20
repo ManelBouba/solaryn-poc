@@ -199,11 +199,13 @@ def switching_point_table(
             threshold = float(baseline_quote) + common_premium
             warranty_threshold = float(baseline_quote) + warranty_premium
             preferred = bool(np.isfinite(quote) and quote <= threshold) if mid != baseline_module_id else True
+            net_value = common_npv - area_bos - float(quote) if np.isfinite(quote) else np.nan
             evidence_note = "decision_evidence_supported" if economic_eligible else "screening_sensitivity_incomplete_model_evidence"
         else:
             common_npv = warranty_npv = area_bos = np.nan
             common_premium = threshold = warranty_threshold = np.nan
             preferred = np.nan
+            net_value = np.nan
             evidence_note = "blocked_incomplete_energy_model_evidence"
 
         rows.append(
@@ -220,6 +222,7 @@ def switching_point_table(
                 "indifference_module_price_usd_w": threshold,
                 "indifference_module_price_warranty_sensitivity_usd_w": warranty_threshold,
                 "actual_quote_usd_w": quote,
+                "net_lifetime_value_index_usd_per_w": net_value,
                 "economically_preferred_vs_baseline_at_quote": preferred,
                 "economic_decision_eligible": economic_eligible,
                 "economic_evidence_note": evidence_note,
