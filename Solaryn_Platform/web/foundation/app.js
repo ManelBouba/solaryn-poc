@@ -1,5 +1,5 @@
 import { api, request } from './api.js?v=admin1';
-import { SolarynLogo } from './logo.js';
+import { SolarynLogo } from './logo.js?v=brand20260929';
 
 const root = document.querySelector('#app');
 
